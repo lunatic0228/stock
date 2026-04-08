@@ -14,6 +14,65 @@ st.set_page_config(
     layout="wide",
 )
 
+# ════════════════════════════════════════════════════════════
+#  密碼鎖（整個 app 的入口）
+# ════════════════════════════════════════════════════════════
+def _check_pin():
+    """回傳 True 表示已解鎖，False 表示顯示密碼頁面並停止後續渲染"""
+    if st.session_state.get("authenticated"):
+        return True
+
+    # 讀取 PIN（優先 Secrets，備援 hardcode）
+    try:
+        correct_pin = st.secrets.get("APP_PIN", "0202")
+    except Exception:
+        correct_pin = "0202"
+
+    # 置中卡片樣式
+    st.markdown("""
+    <style>
+    .pin-box {
+        max-width: 340px;
+        margin: 12vh auto 0 auto;
+        padding: 2.5rem 2rem;
+        border-radius: 16px;
+        background: #1e1e2e;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+        text-align: center;
+    }
+    .pin-title { font-size: 2rem; margin-bottom: 0.3rem; }
+    .pin-sub   { color: #aaa; font-size: 0.95rem; margin-bottom: 1.5rem; }
+    </style>
+    <div class="pin-box">
+      <div class="pin-title">📈 台股分析系統</div>
+      <div class="pin-sub">請輸入 4 位數密碼</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_m, col_r = st.columns([1, 1.2, 1])
+    with col_m:
+        pin_input = st.text_input(
+            "密碼",
+            type="password",
+            max_chars=4,
+            placeholder="• • • •",
+            label_visibility="collapsed",
+            key="pin_input",
+        )
+        unlock_btn = st.button("解鎖", type="primary", use_container_width=True)
+
+        if unlock_btn or (pin_input and len(pin_input) == 4):
+            if pin_input == correct_pin:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("密碼錯誤，請重試")
+
+    return False   # 尚未解鎖，後面的程式碼不執行
+
+if not _check_pin():
+    st.stop()
+
 # ── Session State 初始化（第一次載入從 stocks.py 讀） ────────
 def _init():
     if "holdings" not in st.session_state:
@@ -88,6 +147,10 @@ with tab_analysis:
 - 🔎 盤中掃描：即時量能＋內外盤
 - ⚡ 快速查詢：單股深度分析
         """)
+        st.divider()
+        if st.button("🔒 登出", use_container_width=True):
+            st.session_state.authenticated = False
+            st.rerun()
 
     if not run_btn:
         st.info("👈 左側選擇功能後點擊「執行分析」")
