@@ -14,6 +14,18 @@ import warnings
 warnings.filterwarnings('ignore')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# 台灣時區（Streamlit Cloud 伺服器在 UTC，需明確指定）
+try:
+    from zoneinfo import ZoneInfo
+    TZ_TW = ZoneInfo("Asia/Taipei")
+except ImportError:
+    from datetime import timezone
+    TZ_TW = timezone(timedelta(hours=8))
+
+def now_tw():
+    """回傳台灣當地時間（naive datetime，保持向下相容）"""
+    return datetime.now(TZ_TW).replace(tzinfo=None)
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except AttributeError:
@@ -97,7 +109,7 @@ def get_revenue_trend(code):
     """從 FinMind 取得近3個月月營收，YoY/MoM 自行計算
     注意：FinMind 的 date 是公布日期，revenue_month/year 才是實際營收月份
     """
-    start = (datetime.now() - timedelta(days=460)).strftime('%Y-%m-%d')
+    start = (now_tw() - timedelta(days=460)).strftime('%Y-%m-%d')
     params = {
         'dataset':    'TaiwanStockMonthRevenue',
         'data_id':    code,
@@ -197,8 +209,12 @@ def parse_fugle_price(d):
     total_v  = vol_bid + vol_ask
     ask_pct  = vol_ask / total_v * 100 if total_v else None   # 外盤比
 
+    last_p  = d.get("lastPrice")  or 0   # 盤中即時成交價
+    close_p = d.get("closePrice") or 0   # 官方收盤價（盤後才有當日值）
+
     return {
-        "price":      d.get("lastPrice") or d.get("closePrice"),
+        "price":       last_p  or close_p or None,   # 盤中用：即時成交
+        "close_price": close_p or last_p  or None,   # 盤後用：官方收盤
         "open":       d.get("openPrice"),
         "high":       d.get("highPrice"),
         "low":        d.get("lowPrice"),
@@ -241,7 +257,7 @@ def get_institutional(code):
     if code in _inst_cache:
         return _inst_cache[code]
 
-    start = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+    start = (now_tw() - timedelta(days=20)).strftime('%Y-%m-%d')
     params = {
         'dataset':    'TaiwanStockInstitutionalInvestors',
         'data_id':    code,
@@ -638,7 +654,7 @@ def divider():
 
 def market_status():
     """判斷目前是盤中、盤後還是盤前"""
-    now = datetime.now()
+    now = now_tw()
     weekday = now.weekday()   # 0=週一 … 4=週五
     h, m = now.hour, now.minute
     minutes = h * 60 + m
@@ -654,7 +670,7 @@ def market_status():
 
 
 def run():
-    now    = datetime.now()
+    now    = now_tw()
     status, status_note = market_status()
 
     print()
@@ -1009,7 +1025,7 @@ def run():
 
     # 盤中提示
     if is_intraday:
-        now = datetime.now()
+        now = now_tw()
         remaining = (13 * 60 + 30) - (now.hour * 60 + now.minute)
         print(f"  ⏰ 盤中模式：距收盤約 {remaining} 分鐘")
         print(f"     技術指標以昨日收盤為基準，量比為累計值僅供參考")
@@ -1017,7 +1033,7 @@ def run():
         print()
 
     # 月營收提醒
-    today = datetime.now()
+    today = now_tw()
     if today.day <= 10:
         print(f"  📅 本月 10 日前為月營收公布期，留意各持股最新數字")
         print()
@@ -1043,11 +1059,11 @@ def quick_lookup(raw_code):
         ticker = raw_code.upper()
         label  = "美股"
 
-    # 每次查詢強制清除 Fugle cache，確保取到最新價格（不用盤中快取的舊資料）
-    code_to_clear = raw_code if raw_code.isdigit() else raw_code.upper()
+    # Fugle cache 盤中/盤後欄位含意不同，每次查詢都清除確保拿最新資料
+    code_to_clear = ticker.replace(".TWO", "").replace(".TW", "") if raw_code.isdigit() else raw_code.upper()
     _fugle_cache.pop(code_to_clear, None)
 
-    now = datetime.now()
+    now = now_tw()
     status, status_note = market_status()
 
     print()
@@ -1130,20 +1146,24 @@ def quick_lookup(raw_code):
     atr          = r['ATR']
     deviation    = (close - ma5) / ma5 * 100
 
-    # ── Fugle 報價（盤中即時 / 盤後收盤價皆可用）──
+    # ── Fugle 報價（盤中用 price=即時成交 / 盤後用 close_price=官方收盤）──
     fugle_q = None
     if FUGLE_API_KEY and ticker.endswith((".TW", ".TWO")):
         code_f  = ticker.replace(".TWO", "").replace(".TW", "")
         fugle_d = get_fugle_quote(code_f)
         fugle_q = parse_fugle_price(fugle_d)
-        if fugle_q and fugle_q["price"]:
-            close     = fugle_q["price"]
-            daily_chg = (close - prev_close) / prev_close * 100
-            deviation = (close - ma5) / ma5 * 100
-            if fugle_q["volume"] and vol_ma5 and vol_ma5 > 0:
-                # Fugle volume 單位是張，vol_ma5 單位是股（1張=1000股），需乘以1000換算
-                vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
-            price_note = "（Fugle 即時，延遲 < 3 秒）" if status == "盤中" else "（Fugle 收盤價）"
+        if fugle_q:
+            # 盤中：用 price（lastPrice=即時）；盤後：用 close_price（closePrice=官方收盤）
+            fugle_price = (fugle_q["price"] if status == "盤中"
+                           else fugle_q.get("close_price") or fugle_q["price"])
+            if fugle_price:
+                close     = fugle_price
+                daily_chg = (close - prev_close) / prev_close * 100
+                deviation = (close - ma5) / ma5 * 100
+                if fugle_q["volume"] and vol_ma5 and vol_ma5 > 0:
+                    # Fugle volume 單位是張，vol_ma5 單位是股（1張=1000股），需乘以1000換算
+                    vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
+                price_note = "（Fugle 即時，延遲 < 3 秒）" if status == "盤中" else "（Fugle 收盤價）"
 
     # ── 基本數據 ──
     print(f"\n  現價  {close:.2f}  （{daily_chg:+.2f}%）  {price_note}")
@@ -1285,7 +1305,7 @@ def intraday_scan():
     """即時掃描：掃全部持倉 + 觀察名單，盤中/盤後/盤前均可執行
     用法：python daily_analysis.py scan
     """
-    now = datetime.now()
+    now = now_tw()
     status, status_note = market_status()
     minutes = now.hour * 60 + now.minute
     remaining = max(0, (13 * 60 + 30) - minutes)
