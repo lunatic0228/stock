@@ -1,0 +1,8 @@
+# Streamlit 本地 secrets（含 API Key 和持倉，絕對不上傳）
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
