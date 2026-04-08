@@ -1126,9 +1126,9 @@ def quick_lookup(raw_code):
     atr          = r['ATR']
     deviation    = (close - ma5) / ma5 * 100
 
-    # ── Fugle 即時資料（盤中） ──
+    # ── Fugle 報價（盤中即時 / 盤後收盤價皆可用）──
     fugle_q = None
-    if status == "盤中" and ticker.endswith((".TW", ".TWO")):
+    if FUGLE_API_KEY and ticker.endswith((".TW", ".TWO")):
         code_f  = ticker.replace(".TWO", "").replace(".TW", "")
         fugle_d = get_fugle_quote(code_f)
         fugle_q = parse_fugle_price(fugle_d)
@@ -1139,7 +1139,7 @@ def quick_lookup(raw_code):
             if fugle_q["volume"] and vol_ma5 and vol_ma5 > 0:
                 # Fugle volume 單位是張，vol_ma5 單位是股（1張=1000股），需乘以1000換算
                 vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
-            price_note = "（Fugle 即時，延遲 < 3 秒）"
+            price_note = "（Fugle 即時，延遲 < 3 秒）" if status == "盤中" else "（Fugle 收盤價）"
 
     # ── 基本數據 ──
     print(f"\n  現價  {close:.2f}  （{daily_chg:+.2f}%）  {price_note}")
