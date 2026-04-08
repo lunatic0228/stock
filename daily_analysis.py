@@ -697,6 +697,23 @@ def run():
         if ticker in HOLDINGS:
             fund_cache[ticker] = get_fundamentals(ticker)
 
+    # ── Fugle 最新收盤價（修正 yfinance 更新延遲）──────────
+    # yfinance 盤後有時幾小時才更新，Fugle 收盤後仍回傳當日最終價
+    # 直接把 df 的最後一行 Close 改成 Fugle 價，讓所有下游函式自動用正確價格
+    fugle_price_cache = {}
+    if FUGLE_API_KEY:
+        for ticker, _ in all_tickers:
+            if not ticker.endswith((".TW", ".TWO")):
+                continue
+            code = ticker.replace(".TWO", "").replace(".TW", "")
+            fq   = parse_fugle_price(get_fugle_quote(code))
+            if fq and fq.get("price"):
+                fugle_price_cache[ticker] = fq["price"]
+                df = data_cache.get(ticker)
+                if df is not None:
+                    # 更新 df 最後一行的 Close，讓訊號函式全部用最新價
+                    df.iloc[-1, df.columns.get_loc('Close')] = fq["price"]
+
     status, _ = market_status()
     is_intraday = (status == "盤中")
 
@@ -718,8 +735,11 @@ def run():
         if df is None:
             continue
 
-        h          = HOLDINGS[ticker]
-        close      = df.iloc[-1]['Close']
+        h         = HOLDINGS[ticker]
+        yf_close  = df.iloc[-1]['Close']
+        # 優先用 Fugle 當日收盤價，修正 yfinance 更新延遲
+        close     = fugle_price_cache.get(ticker, yf_close)
+        price_src = "Fugle" if ticker in fugle_price_cache else "yfinance"
         buy_price  = h['buy_price']
         profit_pct = (close - buy_price) / buy_price * 100
         name    = h.get("name", "")
@@ -729,7 +749,8 @@ def run():
         tag_str = "  【" + "｜".join(tags) + "】" if tags else ""
 
         print(f"  {ticker} {name}（{label}）{tag_str}")
-        print(f"  現價 {close:.1f}　買入 {buy_price:.1f}　損益 {profit_pct:+.1f}%")
+        stale_note = f"  ⚠ yfinance 尚未更新（昨收 {yf_close:.1f}）" if close != yf_close else ""
+        print(f"  現價 {close:.1f}　買入 {buy_price:.1f}　損益 {profit_pct:+.1f}%{stale_note}")
 
         msgs = exit_signals(df, buy_price)
         if msgs:
@@ -883,7 +904,7 @@ def run():
             continue
 
         score, msgs = entry_signals(df)
-        close     = df.iloc[-1]['Close']
+        close     = fugle_price_cache.get(ticker, df.iloc[-1]['Close'])
         prev_c    = df.iloc[-2]['Close']
         day_chg   = (close - prev_c) / prev_c * 100
 
