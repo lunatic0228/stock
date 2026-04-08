@@ -1029,7 +1029,7 @@ def run():
 
 
 def quick_lookup(raw_code):
-    """單支股票快速查詢（盤中用）
+    """單支股票快速查詢（盤中 / 盤後皆可用）
     用法：python daily_analysis.py 2330
           python daily_analysis.py NVDA
     """
@@ -1042,6 +1042,10 @@ def quick_lookup(raw_code):
     else:
         ticker = raw_code.upper()
         label  = "美股"
+
+    # 每次查詢強制清除 Fugle cache，確保取到最新價格（不用盤中快取的舊資料）
+    code_to_clear = raw_code if raw_code.isdigit() else raw_code.upper()
+    _fugle_cache.pop(code_to_clear, None)
 
     now = datetime.now()
     status, status_note = market_status()
