@@ -35,82 +35,10 @@ if _secrets:
     FUGLE_API_KEY, FINMIND_TOKEN, HOLDINGS, WATCHLIST = _secrets
 
 else:
-    # ── 本地：直接使用下方設定 ────────────────────────────────
-
-    # 觀察名單
-    # 低軌衛星：3491 昇達科、6285 啟碁、3105 穩懋
-    # AI 散熱：3017 奇鋐
-    # AI 伺服器：6669 緯穎
-    # 人形機器人：2049 上銀
-    WATCHLIST = {
-        "tw": ["3491", "6285", "3105", "3017", "6669", "2049"],
-        "us": [],
-    }
-
-    # 目前持倉
-    # buy_price : 平均買入價
-    # shares    : 持有股數
-    # avg_down  : True = 深套，找低點攤平
-    # building  : True = 建倉中，持續加碼
-    HOLDINGS = {
-        "2308.TW": {
-            "name":      "台達電",
-            "buy_price": 1296.25,
-            "shares":    80,
-            "avg_down":  False,
-            "building":  True,
-        },
-        "2344.TW": {
-            "name":      "華邦電",
-            "buy_price": 122.0,
-            "shares":    1000,
-            "avg_down":  True,
-            "building":  False,
-        },
-        "2367.TW": {
-            "name":      "燿華",
-            "buy_price": 74.33,
-            "shares":    1150,
-            "avg_down":  False,
-            "building":  True,
-        },
-        "6282.TW": {
-            "name":      "康舒",
-            "buy_price": 47.16,
-            "shares":    1200,
-            "avg_down":  False,
-            "building":  True,
-        },
-        "2607.TW": {
-            "name":      "榮運",
-            "buy_price": 57.8,
-            "shares":    2000,
-            "avg_down":  True,
-            "building":  False,
-        },
-        "6919.TW": {
-            "name":      "康霈生技",
-            "buy_price": 160.28,
-            "shares":    3000,
-            "avg_down":  True,
-            "building":  False,
-        },
-        "2313.TW": {
-            "name":      "華通",
-            "buy_price": 240.67,
-            "shares":    450,
-            "avg_down":  False,
-            "building":  True,
-        },
-        "0050.TW": {
-            "name":      "元大台灣50",
-            "buy_price": 69.23,
-            "shares":    6000,
-            "avg_down":  False,
-            "building":  True,
-        },
-    }
-
-    # API Keys
+    # ── 本地開發用備援（不含真實資料）────────────────────────
+    # 真實持倉、API Key 請放在 .streamlit/secrets.toml（已被 .gitignore 排除）
+    # 格式範例請參考 secrets_example.toml
+    WATCHLIST     = {"tw": [], "us": []}
+    HOLDINGS      = {}
     FINMIND_TOKEN = ""
-    FUGLE_API_KEY = "NTZmNWJmNzYtZjBjYi00ZTI2LTgxMTItOTg4ZTdjNjE3OTY0IDI0ZjZhYzlhLWQxOGYtNDMwMS04ZDI4LWU0YWYyMDU1NWUyMg=="
+    FUGLE_API_KEY = ""
