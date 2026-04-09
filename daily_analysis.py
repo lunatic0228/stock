@@ -230,22 +230,32 @@ def parse_fugle_price(d):
     }
 
 
-def _apply_fugle_price(df, price):
-    """Fugle 即時/收盤價寫入 df
-    - 只更新 Close（用於顯示、乖離率、損益計算）
-    - MA5/MA10 刻意保留 yfinance 原值：
-        這些是日線指標，應以前幾日收盤為基準，
-        盤中若混入即時價重算會與所有圖表軟體結果不符
-    - Vol_MA5 改用前一日穩定值：
-        盤中 yfinance 含當日部分量會壓低 Vol_MA5，
-        導致量比虛高；改用前一完整交易日的均量作基準
+def _apply_fugle_price(df, price, is_intraday=False):
+    """Fugle 即時/收盤價寫入 df，依盤中/盤後採用不同策略
+
+    盤後 (is_intraday=False)：
+      - Fugle closePrice = 今日官方收盤價（最終值）
+      - 更新 Close 後重算 MA5/MA10，逼近 Yahoo 顯示的均線值
+        （yfinance 對台股有約 1 日延遲，重算後誤差從 >6 點縮小到 <2 點）
+      - Vol_MA5 也以今日完整量重算
+
+    盤中 (is_intraday=True)：
+      - Fugle lastPrice = 即時波動，不代表最終收盤
+      - MA5/MA10 保持 yfinance 前幾日收盤值，避免盤中低點造成 MA cross 方向誤判
+      - Vol_MA5 改用前一日穩定值，避免盤中部分量壓低分母使量比虛高
     """
     df = df.copy()
     df.iloc[-1, df.columns.get_loc('Close')] = price
 
-    # Vol_MA5：改用前一日的穩定值
-    if len(df) >= 2 and df.iloc[-2]['Vol_MA5'] > 0:
-        df.iloc[-1, df.columns.get_loc('Vol_MA5')] = df.iloc[-2]['Vol_MA5']
+    if is_intraday:
+        # 盤中：MA5/MA10 不動，Vol_MA5 用前一日穩定值
+        if len(df) >= 2 and df.iloc[-2]['Vol_MA5'] > 0:
+            df.iloc[-1, df.columns.get_loc('Vol_MA5')] = df.iloc[-2]['Vol_MA5']
+    else:
+        # 盤後：重算 MA5/MA10（今日收盤已是最終值）
+        df['MA5']    = df['Close'].rolling(5).mean()
+        df['MA10']   = df['Close'].rolling(10).mean()
+        df['Vol_MA5'] = df['Volume'].rolling(5).mean()
 
     return df
 
@@ -747,9 +757,13 @@ def run():
         if ticker in HOLDINGS:
             fund_cache[ticker] = get_fundamentals(ticker)
 
+    status, _ = market_status()
+    is_intraday = (status == "盤中")
+
     # ── Fugle 最新收盤價（修正 yfinance 更新延遲）──────────
     # yfinance 盤後有時幾小時才更新，Fugle 收盤後仍回傳當日最終價
-    # 直接把 df 的最後一行 Close 改成 Fugle 價，讓所有下游函式自動用正確價格
+    # 盤後：重算 MA5/MA10（今日收盤已是最終值，逼近 Yahoo 均線）
+    # 盤中：只更新 Close，MA5/MA10 保持 yfinance 前幾日值（避免即時波動造成誤判）
     fugle_price_cache = {}
     if FUGLE_API_KEY:
         for ticker, _ in all_tickers:
@@ -761,10 +775,7 @@ def run():
                 fugle_price_cache[ticker] = fq["price"]
                 df = data_cache.get(ticker)
                 if df is not None:
-                    data_cache[ticker] = _apply_fugle_price(df, fq["price"])
-
-    status, _ = market_status()
-    is_intraday = (status == "盤中")
+                    data_cache[ticker] = _apply_fugle_price(df, fq["price"], is_intraday=is_intraday)
 
     # 摘要收集桶
     summary_urgent   = []   # 🔴 需要立即處理（停損）
@@ -1408,8 +1419,8 @@ def intraday_scan():
         df = fetch(ticker)
         if df is None:
             continue
-        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
-        df = _apply_fugle_price(df, price)
+        # 盤中：只更新 Close，MA5/MA10 保持 yfinance 前幾日收盤值
+        df = _apply_fugle_price(df, price, is_intraday=True)
         r  = df.iloc[-1]
         vol_ma5   = r["Vol_MA5"]
         # Fugle volume 單位是張，yfinance Vol_MA5 單位是股（1張=1000股），需乘以1000換算
@@ -1557,8 +1568,8 @@ def intraday_scan():
         ask_pct_w = fq_w.get("ask_pct")
         vol_w     = fq_w.get("volume") or 0
 
-        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
-        df_w       = _apply_fugle_price(df_w, price_w)
+        # 盤中：只更新 Close，MA5/MA10 保持 yfinance 前幾日收盤值
+        df_w       = _apply_fugle_price(df_w, price_w, is_intraday=True)
         rw         = df_w.iloc[-1]
         vol_ma5_w  = rw["Vol_MA5"]
         # 按當下時間動態推估全日量，盤後直接用實際收盤量
@@ -1684,8 +1695,8 @@ def watchlist_scan():
         else:
             price_raw = df.iloc[-1]['Close']   # fallback yfinance
 
-        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
-        df = _apply_fugle_price(df, price_raw)
+        # 盤後：重算 MA5/MA10；盤中：只更新 Close
+        df = _apply_fugle_price(df, price_raw, is_intraday=(status == "盤中"))
 
         prev_close = df.iloc[-2]['Close']
         day_chg    = (price_raw - prev_close) / prev_close * 100
