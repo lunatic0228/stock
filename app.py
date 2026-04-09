@@ -337,7 +337,7 @@ with tab_watchlist:
 
     col_save, col_info = st.columns([1, 2])
     with col_save:
-        if st.button("✅ 套用變更", type="primary", use_container_width=True):
+        if st.button("✅ 套用變更", type="primary", use_container_width=True, key="wl_save_btn"):
             new_tw = [str(r).strip() for r in edited_wl["代號"].dropna() if str(r).strip()]
             st.session_state.watchlist["tw"] = new_tw
             st.success(f"已更新 {len(new_tw)} 支觀察名單，下次執行分析立即生效。")
