@@ -619,27 +619,40 @@ def building_signals(df):
 
 
 def entry_signals(df):
-    """新標的進場過濾器"""
+    """新標的進場過濾器（4個條件）"""
     r = df.iloc[-1]
     score, msgs = 0, []
 
+    # 條件1：MA5 > MA10（多頭排列）
     if r['MA5'] > r['MA10']:
         score += 1
         msgs.append(f"  ✓ MA5({r['MA5']:.1f}) > MA10({r['MA10']:.1f})  多頭排列")
     else:
         msgs.append(f"  ✗ MA5({r['MA5']:.1f}) < MA10({r['MA10']:.1f})  空頭排列")
 
+    # 條件2：RSI > 50（動能向上）
     if r['RSI'] > 50:
         score += 1
         msgs.append(f"  ✓ RSI = {r['RSI']:.1f}  動能向上")
     else:
         msgs.append(f"  ✗ RSI = {r['RSI']:.1f}  動能不足")
 
+    # 條件3：量比 ≥ 1.2（有量配合）
     if r['Vol_ratio'] >= 1.2:
         score += 1
         msgs.append(f"  ✓ 量比 = {r['Vol_ratio']:.2f}  有量配合")
     else:
         msgs.append(f"  ✗ 量比 = {r['Vol_ratio']:.2f}  量能不足")
+
+    # 條件4：現價距 MA5 ≤ 8%（不追高，新進場比加碼稍寬鬆）
+    close     = r['Close']
+    ma5       = r['MA5']
+    above_ma5 = (close - ma5) / ma5 * 100
+    if above_ma5 <= 8:
+        score += 1
+        msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，位置合理")
+    else:
+        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，追高風險高（需 ≤ 8%）")
 
     return score, msgs
 
@@ -908,10 +921,10 @@ def run():
     divider()
 
     # ── 新標的進場機會 ──────────────────────────────────
-    print("\n▌ 明日進場機會（觀察名單，三項條件全達成）\n")
-    candidates  = []   # 3/3 全達成
-    vol_breaks  = []   # 2/3 + 量比≥1.5 量能突破
-    watching    = []   # 2/3 一般觀察 / 漲跌停
+    print("\n▌ 明日進場機會（觀察名單，四項條件全達成）\n")
+    candidates  = []   # 4/4 全達成
+    vol_breaks  = []   # 3/4 + 量比≥1.5 量能突破
+    watching    = []   # ≤2/4 一般觀察 / 漲跌停
 
     for ticker, label in all_tickers:
         if ticker in HOLDINGS:
@@ -933,14 +946,16 @@ def run():
             watching.append((ticker, label, msgs, close, "跌停", 0))
             continue
 
-        if score == 3:
+        if score == 4:
             candidates.append((ticker, label, msgs, close, f"{day_chg:+.1f}%"))
-        elif score == 2:
+        elif score == 3:
             vol_r = df.iloc[-1]['Vol_ratio']
             if vol_r >= 1.5:
                 vol_breaks.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", vol_r))
             else:
                 watching.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", vol_r))
+        elif score == 2:
+            watching.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", 0))
 
     if candidates:
         for ticker, label, msgs, close, chg in candidates:
@@ -948,18 +963,18 @@ def run():
             for m in msgs:
                 print(m)
             print()
-            summary_entry.append(f"{ticker} 三項條件全達成，可考慮進場")
+            summary_entry.append(f"{ticker} 四項條件全達成，可考慮進場")
     else:
-        print("  今日無符合全部三項條件的標的\n")
+        print("  今日無符合全部四項條件的標的\n")
 
     if vol_breaks:
-        print("  💡 量能突破機會（2/3 條件 + 量比 ≥ 1.5，可小量試單）：")
+        print("  💡 量能突破機會（3/4 條件 + 量比 ≥ 1.5，可小量試單）：")
         for ticker, label, msgs, close, chg, vol_r in vol_breaks:
             print(f"  💡 {ticker}（{label}）　現價 {close:.1f}（{chg}）量比 {vol_r:.2f}")
             for m in msgs:
                 print(m)
             print()
-            summary_entry.append(f"{ticker} 量能突破試單機會（2/3 + 量比 {vol_r:.2f}）")
+            summary_entry.append(f"{ticker} 量能突破試單機會（3/4 + 量比 {vol_r:.2f}）")
 
     if watching:
         print("  距進場不遠（2/3 條件）或今日特殊狀況：")
@@ -1533,22 +1548,26 @@ def intraday_scan():
         # 量能突破：預估全日量比 ≥ 1.5 且外盤 ≥ 50%（無資料也算）
         is_vol_brk = est_ratio_w >= 1.5 and (ask_pct_w is None or ask_pct_w >= 50)
 
-        if is_vol_brk or score_w >= 2:
+        if is_vol_brk or score_w >= 3:
             watch_found = True
             ob_w  = f"外盤{ask_pct_w:.0f}%" if ask_pct_w is not None else "外盤N/A"
             vol_m = f"💡量比{est_ratio_w:.2f}" if est_ratio_w >= 1.5 else f"量比{est_ratio_w:.2f}"
-            print(f"  {ticker_w}  現價 {price_w:.1f}（{day_chg_w:+.1f}%）  {ob_w}  {vol_m}  訊號 {score_w}/3")
+            print(f"  {ticker_w}  現價 {price_w:.1f}（{day_chg_w:+.1f}%）  {ob_w}  {vol_m}  訊號 {score_w}/4")
             for m in msgs_w:          # ← 顯示各條件 ✓/✗
                 print(m)
-            if is_vol_brk and score_w >= 2:
-                action_w = f"💡 {ticker_w} 量能突破+技術{score_w}/3，可小量試單"
+            if score_w == 4:
+                action_w = f"⭐ {ticker_w} 四項全達成，可考慮進場"
                 actions_watch.append(action_w)
-                print(f"     ← 量能突破 + {score_w}/3 訊號，可考慮小量試單")
+                print(f"     ← 四項條件全達成，可考慮進場")
+            elif is_vol_brk and score_w >= 3:
+                action_w = f"💡 {ticker_w} 量能突破+技術{score_w}/4，可小量試單"
+                actions_watch.append(action_w)
+                print(f"     ← 量能突破 + {score_w}/4 訊號，可考慮小量試單")
             elif is_vol_brk:
-                print(f"     量能突破但技術訊號弱（{score_w}/3），謹慎觀察")
+                print(f"     量能突破但技術訊號弱（{score_w}/4），謹慎觀察")
                 actions_ok.append(f"{ticker_w} 量能突破但訊號弱")
             else:
-                print(f"     技術訊號 {score_w}/3，量能待加強")
+                print(f"     技術訊號 {score_w}/4，量能待加強")
             print()
 
     if not watch_found:
