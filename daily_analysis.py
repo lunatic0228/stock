@@ -670,6 +670,7 @@ def market_status():
 
 
 def run():
+    _fugle_cache.clear()   # 每次執行都清除，確保 Fugle 價格是最新的
     now    = now_tw()
     status, status_note = market_status()
 
@@ -1303,8 +1304,10 @@ def quick_lookup(raw_code):
 
 def intraday_scan():
     """即時掃描：掃全部持倉 + 觀察名單，盤中/盤後/盤前均可執行
+    每次執行前清除 Fugle cache，確保拿到最新報價（Streamlit session 會保留舊 cache）
     用法：python daily_analysis.py scan
     """
+    _fugle_cache.clear()   # 每次執行都清除，確保 Fugle 價格是最新的
     now = now_tw()
     status, status_note = market_status()
     minutes = now.hour * 60 + now.minute
