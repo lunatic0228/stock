@@ -73,10 +73,11 @@ def _check_pin():
 if not _check_pin():
     st.stop()
 
-# ── Session State 初始化（第一次載入從 stocks.py 讀） ────────
+# ── Session State 初始化（第一次載入從 stocks.py / watchlist.py 讀） ─
 def _init():
     if "holdings" not in st.session_state:
-        from stocks import HOLDINGS, WATCHLIST
+        from stocks import HOLDINGS
+        from watchlist import WATCHLIST
         st.session_state.holdings  = {k: dict(v) for k, v in HOLDINGS.items()}
         st.session_state.watchlist = {k: list(v) for k, v in WATCHLIST.items()}
 
@@ -85,8 +86,9 @@ _init()
 
 # ── 工具：把 session_state 注入 daily_analysis 模組 ─────────
 def _inject_holdings():
-    """讓 daily_analysis 使用 session_state 中最新的持股資料"""
-    import daily_analysis
+    """讓 daily_analysis 使用 session_state 中最新的持股 + 觀察名單"""
+    import importlib, daily_analysis
+    importlib.reload(daily_analysis)          # 強制重載，避免 Streamlit module cache 問題
     daily_analysis.HOLDINGS  = st.session_state.holdings
     daily_analysis.WATCHLIST = st.session_state.watchlist
 
@@ -169,22 +171,22 @@ with tab_analysis:
             st.markdown("### ⚡ 快速查詢")
             st.write("輸入股票代號，即時技術指標與進出場訊號。")
     else:
-        _inject_holdings()
+        _inject_holdings()   # 同時 reload + 注入最新持股 / 觀察名單
         with st.spinner("分析中，請稍候..."):
             buf = io.StringIO()
             err = None
             try:
+                import daily_analysis as _da
                 with contextlib.redirect_stdout(buf):
-                    from daily_analysis import run, quick_lookup, intraday_scan, watchlist_scan
                     if "盤後分析" in mode:
-                        run()
+                        _da.run()
                     elif "盤中掃描" in mode:
-                        intraday_scan()
+                        _da.intraday_scan()
                     elif "觀察名單" in mode:
-                        watchlist_scan()
+                        _da.watchlist_scan()
                     elif "快速查詢" in mode:
                         if stock_code:
-                            quick_lookup(stock_code)
+                            _da.quick_lookup(stock_code)
                         else:
                             print("  ⚠  請先輸入股票代號")
             except Exception as e:
@@ -315,27 +317,33 @@ with tab_holdings:
 #  Tab 3：觀察名單
 # ════════════════════════════════════════════════════════════
 with tab_watchlist:
-    st.header("👁 觀察名單")
-    st.caption("管理想追蹤但尚未持有的股票。")
+    st.header("👁 觀察名單管理")
+    st.caption("管理想追蹤但尚未持有的股票。變更後當次分析立即生效。")
 
     tw_list = st.session_state.watchlist.get("tw", [])
 
-    # 顯示目前清單
-    st.subheader("台股觀察名單")
-    tw_str = st.text_area(
-        "每行一個代號（只填數字，系統自動加 .TW）",
-        value="\n".join(tw_list),
-        height=200,
-        help="例：\n3491\n6285\n2330",
+    # 用 data_editor 顯示可編輯清單
+    wl_df = pd.DataFrame({"代號": tw_list})
+    edited_wl = st.data_editor(
+        wl_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "代號": st.column_config.TextColumn("股票代號（只填數字）", help="例：2330、6285"),
+        },
+        hide_index=True,
+        key="wl_editor",
     )
 
-    if st.button("✅ 儲存觀察名單", type="primary"):
-        new_tw = [c.strip() for c in tw_str.splitlines() if c.strip()]
-        st.session_state.watchlist["tw"] = new_tw
-        st.success(f"已儲存 {len(new_tw)} 支台股觀察名單。")
-        st.rerun()
-
-    st.info("💡 永久儲存同樣需要下載 secrets.toml（在「持股管理」頁面下載）")
+    col_save, col_info = st.columns([1, 2])
+    with col_save:
+        if st.button("✅ 套用變更", type="primary", use_container_width=True):
+            new_tw = [str(r).strip() for r in edited_wl["代號"].dropna() if str(r).strip()]
+            st.session_state.watchlist["tw"] = new_tw
+            st.success(f"已更新 {len(new_tw)} 支觀察名單，下次執行分析立即生效。")
+            st.rerun()
+    with col_info:
+        st.info("💡 永久儲存：直接修改 GitHub 上的 `watchlist.py` 即可。")
 
 
 # ════════════════════════════════════════════════════════════
