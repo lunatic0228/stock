@@ -1506,6 +1506,9 @@ def intraday_scan():
         ask_pct_w = fq_w.get("ask_pct")
         vol_w     = fq_w.get("volume") or 0
 
+        # 用 Fugle 即時價更新 df，讓 entry_signals 用正確價格計算
+        df_w.iloc[-1, df_w.columns.get_loc('Close')] = price_w
+
         rw         = df_w.iloc[-1]
         vol_ma5_w  = rw["Vol_MA5"]
         # 按當下時間動態推估全日量，盤後直接用實際收盤量
@@ -1535,6 +1538,8 @@ def intraday_scan():
             ob_w  = f"外盤{ask_pct_w:.0f}%" if ask_pct_w is not None else "外盤N/A"
             vol_m = f"💡量比{est_ratio_w:.2f}" if est_ratio_w >= 1.5 else f"量比{est_ratio_w:.2f}"
             print(f"  {ticker_w}  現價 {price_w:.1f}（{day_chg_w:+.1f}%）  {ob_w}  {vol_m}  訊號 {score_w}/3")
+            for m in msgs_w:          # ← 顯示各條件 ✓/✗
+                print(m)
             if is_vol_brk and score_w >= 2:
                 action_w = f"💡 {ticker_w} 量能突破+技術{score_w}/3，可小量試單"
                 actions_watch.append(action_w)
