@@ -231,21 +231,21 @@ def parse_fugle_price(d):
 
 
 def _apply_fugle_price(df, price):
-    """Fugle 即時/收盤價寫入 df 並重算 MA5/MA10/Vol_MA5
-    - 更新 Close → 重算 MA5、MA10，確保乖離率、追高條件使用正確價格
-    - Vol_MA5 改用前一日完整數值，避免盤中部分量壓低分母導致量比偏高
+    """Fugle 即時/收盤價寫入 df
+    - 只更新 Close（用於顯示、乖離率、損益計算）
+    - MA5/MA10 刻意保留 yfinance 原值：
+        這些是日線指標，應以前幾日收盤為基準，
+        盤中若混入即時價重算會與所有圖表軟體結果不符
+    - Vol_MA5 改用前一日穩定值：
+        盤中 yfinance 含當日部分量會壓低 Vol_MA5，
+        導致量比虛高；改用前一完整交易日的均量作基準
     """
     df = df.copy()
     df.iloc[-1, df.columns.get_loc('Close')] = price
 
-    # 重算 MA（用更新後的 Close）
-    df['MA5']  = df['Close'].rolling(5).mean()
-    df['MA10'] = df['Close'].rolling(10).mean()
-
-    # Vol_MA5：改用前一日的穩定值（盤中 yfinance 含當日部分量會偏低）
+    # Vol_MA5：改用前一日的穩定值
     if len(df) >= 2 and df.iloc[-2]['Vol_MA5'] > 0:
-        stable_vol_ma5 = df.iloc[-2]['Vol_MA5']
-        df.iloc[-1, df.columns.get_loc('Vol_MA5')] = stable_vol_ma5
+        df.iloc[-1, df.columns.get_loc('Vol_MA5')] = df.iloc[-2]['Vol_MA5']
 
     return df
 
@@ -1408,7 +1408,7 @@ def intraday_scan():
         df = fetch(ticker)
         if df is None:
             continue
-        # Fugle 即時價更新 Close + 重算 MA5/MA10/Vol_MA5
+        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
         df = _apply_fugle_price(df, price)
         r  = df.iloc[-1]
         vol_ma5   = r["Vol_MA5"]
@@ -1557,7 +1557,7 @@ def intraday_scan():
         ask_pct_w = fq_w.get("ask_pct")
         vol_w     = fq_w.get("volume") or 0
 
-        # Fugle 即時價更新 Close + 重算 MA5/MA10/Vol_MA5
+        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
         df_w       = _apply_fugle_price(df_w, price_w)
         rw         = df_w.iloc[-1]
         vol_ma5_w  = rw["Vol_MA5"]
@@ -1684,7 +1684,7 @@ def watchlist_scan():
         else:
             price_raw = df.iloc[-1]['Close']   # fallback yfinance
 
-        # Fugle 即時價更新 Close + 重算 MA5/MA10/Vol_MA5
+        # Fugle 即時價更新 Close（MA5/MA10 保持 yfinance 日線值不重算）
         df = _apply_fugle_price(df, price_raw)
 
         prev_close = df.iloc[-2]['Close']
