@@ -1396,18 +1396,19 @@ def intraday_scan():
         print(f"  乖離 {deviation:+.1f}%  RSI {rsi:.1f}  {ob}  {vol_note}")
 
         # 判斷今天要做的事
-        exit_msgs = exit_signals(df, buy_price)
-        has_red   = any("🔴" in m for m in exit_msgs)
-        has_green = any("🟢" in m for m in exit_msgs)
+        exit_msgs  = exit_signals(df, buy_price)
+        has_red    = any("🔴" in m for m in exit_msgs)
+        has_green  = any("🟢" in m for m in exit_msgs)
         has_yellow = any("🟡" in m for m in exit_msgs)
 
         if price < atr_stop:
             action = f"🔴 {name} 跌破停損線 {atr_stop:.1f}，收盤前考慮出場"
             actions_urgent.append(action)
             print(f"  ⚠  跌破 ATR 停損線 {atr_stop:.1f}")
+            for m in exit_msgs: print(m)
         elif has_green:
             trim = int(shares * 0.3)
-            # 內外盤輔助確認
+            for m in exit_msgs: print(m)
             if ask_pct is not None and ask_pct <= 40:
                 action = f"🟢 {name} 停利訊號＋內盤偏重，建議收盤前賣 {trim} 股（{price:.1f}）"
                 actions_urgent.append(action)
@@ -1417,6 +1418,7 @@ def intraday_scan():
                 actions_watch.append(action)
                 print(f"  ⚡ 停利訊號，外盤仍強，可掛單等自動成交")
         elif has_yellow:
+            for m in exit_msgs: print(m)
             if ask_pct is not None and ask_pct <= 40:
                 action = f"🟡 {name} 偏熱 + 內盤偏重，可考慮減碼 {int(shares*0.3)} 股"
                 actions_watch.append(action)
@@ -1425,7 +1427,8 @@ def intraday_scan():
                 print(f"  🟡 偏熱但外盤尚可，繼續觀察")
                 actions_ok.append(f"{name} 偏熱觀察中")
         elif h.get("avg_down"):
-            score, _, ready = avg_down_signals(df)
+            score, s_msgs, ready = avg_down_signals(df)
+            for m in s_msgs: print(m)           # ← 顯示各條件 ✓/✗
             if ready:
                 if ask_pct is not None and ask_pct >= 55:
                     action = f"🟢 {name} 攤平就緒＋外盤偏多，可在 {price:.1f} 掛買單"
@@ -1438,7 +1441,8 @@ def intraday_scan():
                 print(f"  ⏳ 攤平尚未就緒 {score}/4")
                 actions_ok.append(f"{name} 攤平等待中")
         elif h.get("building"):
-            b_score, _, b_ready = building_signals(df)
+            b_score, b_msgs, b_ready = building_signals(df)
+            for m in b_msgs: print(m)           # ← 顯示各條件 ✓/✗
             half_s = max(1, int(shares * 0.15))
             if b_ready:
                 if ask_pct is not None and ask_pct >= 50:
@@ -1456,7 +1460,7 @@ def intraday_scan():
                 else:
                     print(f"  🔸 建倉 3/4，外盤偏空，今天先觀望")
                     actions_ok.append(f"{name} 建倉 3/4 待外盤確認")
-            elif b_score == 2 and vol_est_ratio >= 1.5:     # 量能突破試單
+            elif b_score == 2 and vol_est_ratio >= 1.5:
                 probe_s = max(1, int(shares * 0.10))
                 if ask_pct is not None and ask_pct >= 55:
                     action = (f"💡 {name} 量能突破（量比{vol_est_ratio:.2f}+外盤{ask_pct:.0f}%）"
@@ -1471,6 +1475,9 @@ def intraday_scan():
                 print(f"  ⏳ 建倉 {b_score}/4，繼續等待")
                 actions_ok.append(f"{name} 建倉等待中")
         else:
+            # 一般持倉：有出場訊號才顯示，否則續抱
+            if exit_msgs:
+                for m in exit_msgs: print(m)
             print(f"  ✅ 無訊號，續抱")
             actions_ok.append(f"{name}")
 
