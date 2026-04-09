@@ -1357,6 +1357,8 @@ def intraday_scan():
         df = fetch(ticker)
         if df is None:
             continue
+        # 將 df 的 Close 更新為 Fugle 即時價，讓 building/exit 訊號用正確價格計算
+        df.iloc[-1, df.columns.get_loc('Close')] = price
         r         = df.iloc[-1]
         vol_ma5   = r["Vol_MA5"]
         # Fugle volume 單位是張，yfinance Vol_MA5 單位是股（1張=1000股），需乘以1000換算
