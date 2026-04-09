@@ -1446,8 +1446,8 @@ def intraday_scan():
         df = fetch(ticker)
         if df is None:
             continue
-        # 盤中：只更新 Close，MA5/MA10 保持 yfinance 前幾日收盤值
-        df = _apply_fugle_price(df, price, is_intraday=True)
+        # 盤中：MA5/MA10 不重算；盤前/盤後：重算以取得準確均線值
+        df = _apply_fugle_price(df, price, is_intraday=(status == "盤中"))
         r  = df.iloc[-1]
         vol_ma5   = r["Vol_MA5"]
         # Fugle volume 單位是張，yfinance Vol_MA5 單位是股（1張=1000股），需乘以1000換算
@@ -1595,8 +1595,8 @@ def intraday_scan():
         ask_pct_w = fq_w.get("ask_pct")
         vol_w     = fq_w.get("volume") or 0
 
-        # 盤中：只更新 Close，MA5/MA10 保持 yfinance 前幾日收盤值
-        df_w       = _apply_fugle_price(df_w, price_w, is_intraday=True)
+        # 盤中：MA5/MA10 不重算；盤前/盤後：重算以取得準確均線值
+        df_w       = _apply_fugle_price(df_w, price_w, is_intraday=(status == "盤中"))
         rw         = df_w.iloc[-1]
         vol_ma5_w  = rw["Vol_MA5"]
         # 按當下時間動態推估全日量，盤後直接用實際收盤量
