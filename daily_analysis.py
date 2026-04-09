@@ -1618,11 +1618,147 @@ def intraday_scan():
     print()
 
 
+def watchlist_scan():
+    """觀察名單專屬掃描：列出所有觀察名單的即時狀態與進場條件
+    不混入持倉資訊，方便盤中快速判斷有無新進場機會
+    """
+    _fugle_cache.clear()
+    now    = now_tw()
+    status, status_note = market_status()
+    minutes = now.hour * 60 + now.minute
+
+    if status == "盤中":
+        title     = "觀察名單掃描  盤中即時"
+        time_note = f"距收盤 {max(0,(13*60+30)-minutes)} 分鐘"
+    elif status == "盤後":
+        title     = "觀察名單掃描  今日收盤回顧"
+        time_note = "資料為今日最終收盤（Fugle）"
+    else:
+        title     = "觀察名單掃描  昨日收盤回顧"
+        time_note = "台股尚未開盤，顯示昨日收盤資料"
+
+    print()
+    print("=" * 55)
+    print(f"   {title}")
+    print(f"   {now.strftime('%Y-%m-%d  %H:%M')}  {time_note}")
+    print(f"   共 {len(WATCHLIST.get('tw', []))} 支觀察標的")
+    print("=" * 55)
+
+    entry_candidates = []   # 4/4 或量能突破
+    watching_list    = []   # 其他
+
+    for code in WATCHLIST.get("tw", []):
+        ticker = code + ".TW"
+        df = fetch(ticker, silent=True)
+        if df is None:
+            ticker = code + ".TWO"
+            df = fetch(ticker, silent=True)
+        if df is None:
+            print(f"\n  ⚠  {code}：無法取得資料")
+            continue
+
+        # Fugle 即時報價
+        fugle_d = get_fugle_quote(code)
+        fq      = parse_fugle_price(fugle_d)
+
+        if fq and fq.get("price" if status == "盤中" else "close_price"):
+            price_raw = fq["price"] if status == "盤中" else (fq.get("close_price") or fq["price"])
+        else:
+            price_raw = df.iloc[-1]['Close']   # fallback yfinance
+
+        # 更新 df.Close 讓訊號函式用即時價
+        df.iloc[-1, df.columns.get_loc('Close')] = price_raw
+
+        prev_close = df.iloc[-2]['Close']
+        day_chg    = (price_raw - prev_close) / prev_close * 100
+        ma5        = df.iloc[-1]['MA5']
+        deviation  = (price_raw - ma5) / ma5 * 100
+        rsi        = df.iloc[-1]['RSI']
+        vol_ma5    = df.iloc[-1]['Vol_MA5']
+
+        # 量能（盤中推估 / 盤後直接用）
+        vol_raw = fq.get("volume") or 0 if fq else 0
+        if status == "盤中" and vol_raw and vol_ma5:
+            elapsed_min  = max(1, minutes - 9 * 60)
+            progress     = min(elapsed_min / 270, 1.0)
+            est_ratio    = (vol_raw / progress * 1000) / vol_ma5
+            vol_note     = f"預估量比 {est_ratio:.2f}（已過{progress*100:.0f}%）"
+        else:
+            est_ratio    = (vol_raw * 1000) / vol_ma5 if (vol_raw and vol_ma5) else df.iloc[-1]['Vol_ratio']
+            vol_note     = f"量比 {est_ratio:.2f}"
+
+        # 內外盤
+        ask_pct = fq.get("ask_pct") if fq else None
+        if ask_pct is not None:
+            if ask_pct >= 60:   ob = f"外盤 {ask_pct:.0f}% 偏多↑"
+            elif ask_pct <= 40: ob = f"外盤 {ask_pct:.0f}% 偏空↓"
+            else:               ob = f"外盤 {ask_pct:.0f}% 平衡"
+        else:
+            ob = ""
+
+        # 漲跌停過濾
+        limit_tag = ""
+        if day_chg >= 9.5:
+            limit_tag = "  🔴 漲停"
+        elif day_chg <= -9.5:
+            limit_tag = "  🟢 跌停"
+
+        # 進場訊號
+        score, msgs = entry_signals(df)
+        is_vol_brk  = est_ratio >= 1.5 and (ask_pct is None or ask_pct >= 50)
+
+        # 輸出標頭
+        src = "Fugle" if fq else "yfinance"
+        print(f"\n  {ticker}  現價 {price_raw:.1f}（{day_chg:+.1f}%）  {ob}  {vol_note}{limit_tag}")
+        print(f"  乖離率 {deviation:+.1f}%  RSI {rsi:.1f}  訊號 {score}/4  （{src}）")
+        for m in msgs:
+            print(m)
+
+        # 結論
+        if limit_tag:
+            print(f"  ⏸  今日{limit_tag.strip()}，明日再評估")
+        elif score == 4:
+            print(f"  ⭐ 四項全達成，可考慮進場")
+            entry_candidates.append(f"⭐ {ticker} 四項全達成（{day_chg:+.1f}%）")
+        elif score == 3 and is_vol_brk:
+            print(f"  💡 量能突破 + 3/4，可小量試單")
+            entry_candidates.append(f"💡 {ticker} 量能突破試單（量比{est_ratio:.2f}，{day_chg:+.1f}%）")
+        elif score == 3:
+            print(f"  🔍 3/4 條件達成，量能待加強")
+            watching_list.append(f"{ticker} 3/4（量比{est_ratio:.2f}）")
+        elif score == 2 and is_vol_brk:
+            print(f"  👀 量能突破但訊號弱（2/4），謹慎觀察")
+            watching_list.append(f"{ticker} 量能突破但2/4")
+        else:
+            print(f"  ⏳ {score}/4，持續觀察")
+
+    # ── 摘要 ──
+    divider()
+    print()
+    if entry_candidates:
+        print("  【今日可考慮進場】")
+        for a in entry_candidates:
+            print(f"  → {a}")
+        print()
+    if watching_list:
+        print("  【接近但尚未就緒】")
+        for a in watching_list:
+            print(f"  ○ {a}")
+        print()
+    if not entry_candidates and not watching_list:
+        print("  今日觀察名單無明確進場訊號，繼續等待")
+        print()
+    print("=" * 55)
+    print()
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         if arg.lower() == "scan":
             intraday_scan()
+        elif arg.lower() == "watch":
+            watchlist_scan()
         else:
             quick_lookup(arg)
     else:

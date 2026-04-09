@@ -132,7 +132,7 @@ with tab_analysis:
         st.header("功能選單")
         mode = st.radio(
             "選擇功能",
-            ["📊 盤後分析", "🔎 盤中掃描", "⚡ 快速查詢"],
+            ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢"],
         )
         stock_code = None
         if "快速查詢" in mode:
@@ -144,7 +144,8 @@ with tab_analysis:
         st.markdown("""
 **說明**
 - 📊 盤後分析：持倉警示＋進場機會
-- 🔎 盤中掃描：即時量能＋內外盤
+- 🔎 盤中掃描：持倉即時量能＋內外盤
+- 👁 觀察名單：所有觀察標的進場條件
 - ⚡ 快速查詢：單股深度分析
         """)
         st.divider()
@@ -154,16 +155,19 @@ with tab_analysis:
 
     if not run_btn:
         st.info("👈 左側選擇功能後點擊「執行分析」")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown("### 📊 盤後分析")
-            st.write("收盤後執行，持倉警示、攤平／加碼訊號、觀察名單進場機會。")
+            st.write("收盤後執行，持倉警示、攤平／加碼訊號。")
         with c2:
             st.markdown("### 🔎 盤中掃描")
-            st.write("盤中隨時執行，Fugle 即時量能與內外盤，當日操作建議。")
+            st.write("持倉即時量能與內外盤，當日操作建議。")
         with c3:
+            st.markdown("### 👁 觀察名單")
+            st.write("所有觀察標的即時進場條件，快速篩選機會。")
+        with c4:
             st.markdown("### ⚡ 快速查詢")
-            st.write("輸入股票代號，即時技術指標、持倉狀態、進出場訊號。")
+            st.write("輸入股票代號，即時技術指標與進出場訊號。")
     else:
         _inject_holdings()
         with st.spinner("分析中，請稍候..."):
@@ -171,11 +175,13 @@ with tab_analysis:
             err = None
             try:
                 with contextlib.redirect_stdout(buf):
-                    from daily_analysis import run, quick_lookup, intraday_scan
+                    from daily_analysis import run, quick_lookup, intraday_scan, watchlist_scan
                     if "盤後分析" in mode:
                         run()
                     elif "盤中掃描" in mode:
                         intraday_scan()
+                    elif "觀察名單" in mode:
+                        watchlist_scan()
                     elif "快速查詢" in mode:
                         if stock_code:
                             quick_lookup(stock_code)

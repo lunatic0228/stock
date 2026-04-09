@@ -1,11 +1,15 @@
 # ============================================================
 #  股票設定檔
-#  本地執行：直接修改下方 HOLDINGS / WATCHLIST / API Keys
-#  雲端部署：資料從 Streamlit Secrets 讀取，不需要修改這裡
+#  觀察名單：watchlist.py（公開，可直接在 GitHub 修改）
+#  持倉 / API Key：Streamlit Secrets（私密，不進 GitHub）
 # ============================================================
 
+# 觀察名單從公開的 watchlist.py 讀取
+from watchlist import WATCHLIST
+
+
 def _load_from_secrets():
-    """雲端部署時從 Streamlit Secrets 讀取設定，失敗回傳 None"""
+    """雲端部署時從 Streamlit Secrets 讀取持倉與 API Key，失敗回傳 None"""
     try:
         import streamlit as st
         if "FUGLE_API_KEY" not in st.secrets:
@@ -21,9 +25,7 @@ def _load_from_secrets():
                 "avg_down":  bool(h.get("avg_down", False)),
                 "building":  bool(h.get("building", False)),
             }
-        tw_list   = list(st.secrets.get("watchlist", {}).get("tw", []))
-        watchlist = {"tw": tw_list, "us": []}
-        return fugle_key, finmind_token, holdings, watchlist
+        return fugle_key, finmind_token, holdings
     except Exception:
         return None
 
@@ -32,13 +34,11 @@ _secrets = _load_from_secrets()
 
 if _secrets:
     # ── 雲端：從 Streamlit Secrets 讀取 ──────────────────────
-    FUGLE_API_KEY, FINMIND_TOKEN, HOLDINGS, WATCHLIST = _secrets
+    FUGLE_API_KEY, FINMIND_TOKEN, HOLDINGS = _secrets
 
 else:
     # ── 本地開發用備援（不含真實資料）────────────────────────
     # 真實持倉、API Key 請放在 .streamlit/secrets.toml（已被 .gitignore 排除）
-    # 格式範例請參考 secrets_example.toml
-    WATCHLIST     = {"tw": [], "us": []}
     HOLDINGS      = {}
     FINMIND_TOKEN = ""
     FUGLE_API_KEY = ""
