@@ -477,7 +477,22 @@ def fetch(ticker, silent=False):
 
         if df.empty:
             return None
-        # 移除尚未收盤的空行（開盤前或休市日可能出現 NaN）
+        # 最後一行 Close = NaN 但有成交量 → 今日已開盤但 yfinance 收盤尚未寫入
+        # 保留此行並先用前一日收盤暫填，_apply_fugle_price 之後會用官方收盤覆蓋
+        # 這樣 MA5/MA10 才能正確包含今日（否則整行被 dropna 丟棄，MA5 少算一天）
+        import pandas as pd
+        if (len(df) >= 2
+                and pd.isna(df.iloc[-1]['Close'])
+                and pd.notna(df.iloc[-1]['Volume'])
+                and df.iloc[-1]['Volume'] > 0):
+            df = df.copy()
+            prev_close = df.iloc[-2]['Close']
+            df.iloc[-1, df.columns.get_loc('Close')] = prev_close
+            # High/Low/Open 也填上去，避免 ATR 計算出 NaN
+            for col in ('Open', 'High', 'Low'):
+                if pd.isna(df.iloc[-1][col]):
+                    df.iloc[-1, df.columns.get_loc(col)] = prev_close
+        # 移除其他 NaN（真正的空行）
         df = df.dropna(subset=['Close'])
         if df.empty:
             return None
@@ -1210,6 +1225,18 @@ def quick_lookup(raw_code):
                     # Fugle volume 單位是張，vol_ma5 單位是股（1張=1000股），需乘以1000換算
                     vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
                 price_note = "（Fugle 即時，延遲 < 3 秒）" if status == "盤中" else "（Fugle 收盤價）"
+
+    # ── 用最終 close 重算 MA5/MA10/Vol_MA5 ──────────────────
+    # 盤後：今日收盤已是最終值，重算後 MA5/MA10 逼近 Yahoo 顯示值
+    # 盤中：只更新 Close，MA5/MA10 保持前幾日收盤值（避免波動誤判 cross 方向）
+    df      = _apply_fugle_price(df, close, is_intraday=(status == "盤中"))
+    r       = df.iloc[-1]
+    ma5     = r['MA5']
+    ma10    = r['MA10']
+    vol_ma5 = r['Vol_MA5']
+    deviation = (close - ma5) / ma5 * 100
+    if fugle_q and fugle_q.get("volume") and vol_ma5 > 0:
+        vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
 
     # ── 盤中量能預估（按已過時間比例推算全日量比）──
     fugle_vol = fugle_q["volume"] if fugle_q and fugle_q.get("volume") else None
