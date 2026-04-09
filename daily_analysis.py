@@ -1486,6 +1486,12 @@ def intraday_scan():
         print(f"\n  {ticker} {name}  現價 {price:.1f}  損益 {profit_pct:+.1f}%")
         print(f"  乖離 {deviation:+.1f}%  RSI {rsi:.1f}  {ob}  {vol_note}")
 
+        # 把 Fugle 計算的 vol_est_ratio 寫回 df，確保 building_signals 用的量比一致
+        # （yfinance Volume 與 Fugle 有 1~4% 誤差，統一用 Fugle 為準）
+        if vol_ma5 and vol_ma5 > 0:
+            df = df.copy()
+            df.iloc[-1, df.columns.get_loc('Vol_ratio')] = vol_est_ratio
+
         # 判斷今天要做的事
         exit_msgs  = exit_signals(df, buy_price)
         has_red    = any("🔴" in m for m in exit_msgs)
@@ -1615,6 +1621,11 @@ def intraday_scan():
 
         if day_chg_w >= 9.5:   # 漲停不追
             continue
+
+        # 把 Fugle 計算的 est_ratio_w 寫回 df，確保 entry_signals 用的量比一致
+        if vol_ma5_w and vol_ma5_w > 0:
+            df_w = df_w.copy()
+            df_w.iloc[-1, df_w.columns.get_loc('Vol_ratio')] = est_ratio_w
 
         score_w, msgs_w = entry_signals(df_w)
 
