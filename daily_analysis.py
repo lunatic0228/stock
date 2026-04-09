@@ -1181,6 +1181,19 @@ def quick_lookup(raw_code):
                     vol_ratio = (fugle_q["volume"] * 1000) / vol_ma5
                 price_note = "（Fugle 即時，延遲 < 3 秒）" if status == "盤中" else "（Fugle 收盤價）"
 
+    # ── 盤中量能預估（按已過時間比例推算全日量比）──
+    fugle_vol = fugle_q["volume"] if fugle_q and fugle_q.get("volume") else None
+    if status == "盤中" and fugle_vol and vol_ma5 and vol_ma5 > 0:
+        total_min   = 270
+        elapsed_min = max(1, (now.hour * 60 + now.minute) - 9 * 60)
+        progress    = min(elapsed_min / total_min, 1.0)
+        est_full_vol   = fugle_vol / progress
+        vol_est_ratio  = (est_full_vol * 1000) / vol_ma5
+        vol_display    = f"{vol_est_ratio:.2f}（預估全日，已過{progress*100:.0f}%）"
+    else:
+        vol_est_ratio = vol_ratio
+        vol_display   = f"{vol_ratio:.2f}"
+
     # ── 基本數據 ──
     print(f"\n  現價  {close:.2f}  （{daily_chg:+.2f}%）  {price_note}")
     if fugle_q:
@@ -1188,7 +1201,7 @@ def quick_lookup(raw_code):
         avg_note = f"  均價 {avg:.2f}  {'現價在均價之上 ↑' if close >= avg else '現價在均價之下 ↓'}" if avg else ""
         print(f"  開 {fugle_q['open']:.1f}  高 {fugle_q['high']:.1f}  低 {fugle_q['low']:.1f}{avg_note}")
     print(f"  MA5   {ma5:.2f}  MA10  {ma10:.2f}")
-    print(f"  RSI   {rsi:.1f}  MACD柱  {macd_hist:+.3f}  量比  {vol_ratio:.2f}")
+    print(f"  RSI   {rsi:.1f}  MACD柱  {macd_hist:+.3f}  量比  {vol_display}")
     print(f"  ATR   {atr:.2f}  乖離率  {deviation:+.1f}%")
 
     # ── 內外盤（Fugle 盤中才有） ──
@@ -1286,16 +1299,20 @@ def quick_lookup(raw_code):
     else:
         # 不在持倉：顯示進場訊號
         print()
-        print(f"  ── 進場條件 ──")
+        print(f"  ── 進場條件（4/4）──")
         score, msgs = entry_signals(df)
         for m in msgs:
             print(m)
-        if score == 3:
-            print(f"  ✅ 三項全達成，可考慮進場")
-        elif score == 2:
-            print(f"  🔍 {score}/3 條件達成，距進場不遠")
+        # 量能突破：用預估量比判斷
+        vol_brk = vol_est_ratio >= 1.5
+        if score == 4:
+            print(f"  ⭐ 四項全達成，可考慮進場")
+        elif score == 3 and vol_brk:
+            print(f"  💡 3/4 + 量比預估 {vol_est_ratio:.2f}（量能突破），可小量試單")
+        elif score == 3:
+            print(f"  🔍 3/4 條件達成，量能尚不足（量比 {vol_est_ratio:.2f}），繼續觀察")
         else:
-            print(f"  ⏳ {score}/3 條件達成，繼續觀察")
+            print(f"  ⏳ {score}/4 條件達成，繼續觀察")
 
     # ── 三大法人（台股） ──
     if ticker.endswith('.TW'):
