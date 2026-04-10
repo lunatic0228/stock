@@ -509,7 +509,16 @@ def fetch(ticker, silent=False):
 # ============================================================
 
 def exit_signals(df, buy_price):
-    """持倉警示"""
+    """持倉警示與出場訊號
+
+    停損層級（由重到輕）：
+      🔴 ATR 移動停損 / 雙破均線 / 單日跳空 → 建議出場或減碼
+      🟠 跌破 MA5+MACD翻負 / 單獨跌破 MA10  → 考慮減碼
+      🟡 跌破 MA5+MACD仍正                  → 觀望
+
+    停利層級（乖離率 + RSI 雙重確認）：
+      🟢 強力停利 / 減碼 30% / 偏熱留意
+    """
     r    = df.iloc[-1]
     prev = df.iloc[-2]
     msgs = []
@@ -519,41 +528,63 @@ def exit_signals(df, buy_price):
     daily_change = (close - prev['Close']) / prev['Close'] * 100
     profit_pct   = (close - buy_price) / buy_price * 100
 
-    # ATR 動態停損
-    atr_stop = buy_price - 2 * atr
+    # ── ATR 移動停損（依獲利狀況分段）────────────────────────
+    # 虧損或小獲利（< 10%）：用買入價計算，保護本金
+    # 中等獲利（10~20%）：移至成本以上，至少保住 40% 獲利
+    # 大幅獲利（> 20%）：用當前價計算 trailing stop，鎖住利潤
+    if profit_pct >= 20:
+        atr_stop = close - 2 * atr          # trailing：跟著現價走
+        stop_label = f"移動停損（現價-2ATR）"
+    elif profit_pct >= 10:
+        atr_stop = buy_price + (close - buy_price) * 0.4   # 保住 40% 獲利
+        stop_label = f"保利停損（鎖住 40% 獲利）"
+    else:
+        atr_stop = buy_price - 2 * atr      # 原始停損，保護本金
+        stop_label = f"初始停損"
+
     if close < atr_stop:
-        msgs.append(f"  🔴 跌破 ATR 停損線 {atr_stop:.1f}  → 建議出場")
+        msgs.append(f"  🔴 跌破 ATR {stop_label} {atr_stop:.1f}  → 建議出場")
 
-    # 單日跌幅 > 4%
+    # ── 單日跳空 ──────────────────────────────────────────
     if daily_change < -4:
-        msgs.append(f"  🔴 單日跌幅 {daily_change:.1f}%  → 注意跳空")
+        msgs.append(f"  🔴 單日跌幅 {daily_change:.1f}%  → 注意跳空，考慮減碼")
 
-    # 跌破 MA10
-    if close < r['MA10']:
-        msgs.append(f"  🟠 收盤跌破 MA10({r['MA10']:.1f})  → 注意風險")
+    # ── 雙線同時跌破（最強出場訊號）────────────────────────
+    below_ma5  = close < r['MA5']
+    below_ma10 = close < r['MA10']
+    if below_ma5 and below_ma10:
+        msgs.append(
+            f"  🔴 同時跌破 MA5({r['MA5']:.1f}) + MA10({r['MA10']:.1f})"
+            f"  → 趨勢轉弱，建議減碼或出場"
+        )
+    else:
+        # 跌破 MA10（單獨）
+        if below_ma10:
+            msgs.append(
+                f"  🟠 跌破 MA10({r['MA10']:.1f})  → 中期支撐失守，考慮減碼 30%"
+            )
+        # 跌破 MA5（單獨）
+        if below_ma5:
+            if r['MACD_hist'] < 0:
+                msgs.append(f"  🟠 跌破 MA5({r['MA5']:.1f}) 且 MACD 翻負  → 短線轉弱，考慮部分出場")
+            else:
+                msgs.append(f"  🟡 跌破 MA5({r['MA5']:.1f}) 但 MACD 仍正  → 觀望，留意明日走勢")
 
-    # 跌破 MA5，看 MACD
-    if close < r['MA5']:
-        if r['MACD_hist'] < 0:
-            msgs.append(f"  🟠 跌破 MA5 且 MACD 翻負  → 考慮部分出場")
-        else:
-            msgs.append(f"  🟡 跌破 MA5 但 MACD 仍正  → 觀望")
-
-    # ── 移動停利（乖離率 + RSI 雙重確認）──
-    deviation = (close - r['MA5']) / r['MA5'] * 100   # 現價偏離 MA5 %
+    # ── 移動停利（乖離率 + RSI 雙重確認）────────────────────
+    deviation = (close - r['MA5']) / r['MA5'] * 100
     rsi       = r['RSI']
 
-    if deviation > 12 and rsi > 78:
+    if deviation > 12 and rsi > 75:
         msgs.append(
-            f"  🟢 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 強力停利訊號，建議減碼 30% 或考慮出清"
+            f"  🟢 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 強力停利，建議減碼 30%~50%"
         )
-    elif deviation > 8 and rsi > 70:
+    elif deviation > 8 and rsi > 68:
         msgs.append(
-            f"  🟢 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 短線過熱，建議先減碼 30%"
+            f"  🟢 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 過熱，建議先減碼 30%"
         )
-    elif deviation > 5 and rsi > 65 and profit_pct > 0:
+    elif deviation > 5 and rsi > 62 and profit_pct > 0:
         msgs.append(
-            f"  🟡 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 偏熱，留意是否需要減碼"
+            f"  🟡 乖離率 {deviation:.1f}% 且 RSI {rsi:.1f}  → 偏熱，留意是否需要獲利了結"
         )
 
     return msgs
@@ -1340,11 +1371,20 @@ def quick_lookup(raw_code):
         buy_price  = holding['buy_price']
         shares     = holding['shares']
         profit_pct = (close - buy_price) / buy_price * 100
-        atr_stop   = buy_price - 2 * atr
+        # ATR 停損線：依獲利分三段（與 exit_signals 邏輯一致）
+        if profit_pct >= 20:
+            atr_stop   = close - 2 * atr
+            stop_label = "移動停損（現價-2ATR）"
+        elif profit_pct >= 10:
+            atr_stop   = buy_price + (close - buy_price) * 0.4
+            stop_label = "保利停損（鎖住40%獲利）"
+        else:
+            atr_stop   = buy_price - 2 * atr
+            stop_label = "初始停損"
         print()
         print(f"  ── 持倉資訊 ──")
         print(f"  買入 {buy_price:.2f}  持有 {shares} 股  損益 {profit_pct:+.1f}%")
-        print(f"  ATR 停損線  {atr_stop:.2f}  {'⚠ 已跌破！' if close < atr_stop else '（未觸發）'}")
+        print(f"  ATR {stop_label}  {atr_stop:.2f}  {'⚠ 已跌破！' if close < atr_stop else '（未觸發）'}")
 
         # ── 出場/停利訊號（完整規則） ──
         exit_msgs = exit_signals(df, buy_price)
@@ -1352,9 +1392,9 @@ def quick_lookup(raw_code):
         print(f"  ── 出場訊號檢查 ──")
         # 移動停利規則說明
         print(f"  停利規則：乖離率 {deviation:+.1f}%  RSI {rsi:.1f}")
-        print(f"    強力出清：乖離 >12% 且 RSI >78   → {'✅ 觸發' if deviation>12 and rsi>78 else '❌ 未到'}")
-        print(f"    減碼30%：乖離 >8%  且 RSI >70   → {'✅ 觸發' if deviation>8 and rsi>70 else '❌ 未到'}")
-        print(f"    留意偏熱：乖離 >5%  且 RSI >65   → {'✅ 觸發' if deviation>5 and rsi>65 and profit_pct>0 else '❌ 未到'}")
+        print(f"    強力出清：乖離 >12% 且 RSI >75   → {'✅ 觸發' if deviation>12 and rsi>75 else '❌ 未到'}")
+        print(f"    減碼30%：乖離 >8%  且 RSI >68   → {'✅ 觸發' if deviation>8 and rsi>68 else '❌ 未到'}")
+        print(f"    留意偏熱：乖離 >5%  且 RSI >62   → {'✅ 觸發' if deviation>5 and rsi>62 and profit_pct>0 else '❌ 未到'}")
         if exit_msgs:
             print()
             for m in exit_msgs:
@@ -1496,7 +1536,13 @@ def intraday_scan():
         deviation = (price - ma5) / ma5 * 100
         rsi       = r["RSI"]
         atr       = r["ATR"]
-        atr_stop  = buy_price - 2 * atr
+        # ATR 停損線：依獲利分三段（與 exit_signals 邏輯一致）
+        if profit_pct >= 20:
+            atr_stop = price - 2 * atr
+        elif profit_pct >= 10:
+            atr_stop = buy_price + (price - buy_price) * 0.4
+        else:
+            atr_stop = buy_price - 2 * atr
 
         # 內外盤解讀
         if ask_pct is not None:
