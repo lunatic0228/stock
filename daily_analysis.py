@@ -571,19 +571,17 @@ def avg_down_signals(df):
 
     close = r['Close']
 
-    # 條件1：RSI 曾超賣（近10日曾低於30）且現在回升中
+    # 條件1：RSI < 60 且正在回升（不追高；從低點往上才是攤平好時機）
     rsi_recent_low = df['RSI'].iloc[-10:].min()
-    rsi_rising     = r['RSI'] > prev['RSI']
-    if rsi_recent_low < 35 and r['RSI'] > 35 and rsi_rising:
+    rsi_now        = r['RSI']
+    rsi_rising     = rsi_now > prev['RSI']
+    if rsi_now < 60 and rsi_rising:
         score += 1
-        msgs.append(f"  ✓ RSI 從超賣區回升（現 {r['RSI']:.1f}，近期低點 {rsi_recent_low:.1f}）")
+        msgs.append(f"  ✓ RSI {rsi_now:.1f} 回升中（近期低點 {rsi_recent_low:.1f}，方向向上）")
+    elif rsi_now >= 60:
+        msgs.append(f"  ✗ RSI {rsi_now:.1f} 偏高，等回落再考慮攤平（需 < 60）")
     else:
-        if rsi_recent_low >= 35:
-            msgs.append(f"  ✗ RSI 尚未進入超賣區（近期低點 {rsi_recent_low:.1f}）")
-        elif r['RSI'] <= 35:
-            msgs.append(f"  ✗ RSI 仍在超賣區（{r['RSI']:.1f}），尚未反彈")
-        else:
-            msgs.append(f"  ✗ RSI 回升力道不足（{r['RSI']:.1f}）")
+        msgs.append(f"  ✗ RSI {rsi_now:.1f} 仍在下滑（近期低點 {rsi_recent_low:.1f}），尚未止跌")
 
     # 條件2：MA5 斜率由負轉正（今日 MA5 > 昨日 MA5）
     ma5_turning_up = r['MA5'] > prev['MA5']
@@ -1578,6 +1576,39 @@ def intraday_scan():
                 for m in exit_msgs: print(m)
             print(f"  ✅ 無訊號，續抱")
             actions_ok.append(f"{name}")
+
+    # ── 攤平時機偵測 ──────────────────────────────────────
+    avg_down_list = [(t, h) for t, h in HOLDINGS.items()
+                     if t.endswith((".TW", ".TWO")) and h.get("avg_down")]
+    if avg_down_list:
+        divider()
+        print("\n▌ 攤平時機偵測\n")
+        for ticker, h_a in avg_down_list:
+            fq_a  = parse_fugle_price(get_fugle_quote(
+                        ticker.replace(".TWO","").replace(".TW","")))
+            price_a = (fq_a["price"] if status == "盤中"
+                       else (fq_a.get("close_price") or fq_a["price"])) if fq_a else None
+            df_a  = fetch(ticker)
+            if df_a is None:
+                continue
+            if price_a:
+                df_a = _apply_fugle_price(df_a, price_a,
+                                          is_intraday=(status == "盤中"))
+            else:
+                price_a = df_a.iloc[-1]['Close']
+
+            score_a, msgs_a, ready_a = avg_down_signals(df_a)
+            buy_a      = h_a["buy_price"]
+            profit_a   = (price_a - buy_a) / buy_a * 100
+            name_a     = h_a.get("name", ticker)
+
+            if ready_a:
+                print(f"  🟢 {ticker} {name_a}  現價 {price_a:.1f}  損益 {profit_a:+.1f}%  ← 攤平訊號確認！({score_a}/4)")
+            else:
+                print(f"  ⏳ {ticker} {name_a}  現價 {price_a:.1f}  損益 {profit_a:+.1f}%  尚未就緒 ({score_a}/4)")
+            for m in msgs_a:
+                print(m)
+            print()
 
     # ── 觀察名單 量能突破掃描 ──────────────────────────────
     divider()
