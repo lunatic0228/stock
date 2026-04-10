@@ -430,10 +430,11 @@ def calculate_indicators(df):
     df['MA5']  = close.rolling(5).mean()
     df['MA10'] = close.rolling(10).mean()
 
-    # RSI(14)
+    # RSI(14)：Wilder's SMMA（與 Yahoo Finance / TradingView 等圖表軟體一致）
+    # 注意：rolling(14).mean() 是簡單平均，會與圖表差 10~20 點，不可用
     delta = close.diff()
-    gain  = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss  = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    gain  = delta.where(delta > 0, 0.0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    loss  = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     rs    = gain / loss.replace(0, np.nan)
     df['RSI'] = 100 - (100 / (1 + rs))
 
