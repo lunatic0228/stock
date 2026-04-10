@@ -663,40 +663,55 @@ def building_signals(df):
 
 
 def entry_signals(df):
-    """新標的進場過濾器（4個條件）"""
+    """新標的進場過濾器（回調進場策略，4個條件）
+
+    設計邏輯：在多頭趨勢中等回調至 MA5 附近再進場，
+    避免追高買在漲幅末段（倒貨區）。
+
+    回調日通常是「量縮綠K」，條件刻意不要求放量，
+    量能爆發的突破訊號由盤中掃描的「💡量能突破」另行標記。
+    """
     r = df.iloc[-1]
+    prev = df.iloc[-2]
     score, msgs = 0, []
 
-    # 條件1：MA5 > MA10（多頭排列）
+    # 條件1：MA5 > MA10（多頭排列，大方向對才考慮進場）
     if r['MA5'] > r['MA10']:
         score += 1
         msgs.append(f"  ✓ MA5({r['MA5']:.1f}) > MA10({r['MA10']:.1f})  多頭排列")
     else:
-        msgs.append(f"  ✗ MA5({r['MA5']:.1f}) < MA10({r['MA10']:.1f})  空頭排列")
+        msgs.append(f"  ✗ MA5({r['MA5']:.1f}) < MA10({r['MA10']:.1f})  空頭排列，暫不進場")
 
-    # 條件2：RSI > 50（動能向上）
-    if r['RSI'] > 50:
+    # 條件2：RSI 40~65（健康區間；>65 過熱追高風險高；<40 動能太弱）
+    rsi = r['RSI']
+    if 40 <= rsi <= 65:
         score += 1
-        msgs.append(f"  ✓ RSI = {r['RSI']:.1f}  動能向上")
+        msgs.append(f"  ✓ RSI = {rsi:.1f}  位於健康進場區間（40~65）")
+    elif rsi > 65:
+        msgs.append(f"  ✗ RSI = {rsi:.1f}  過熱，追高風險高（需 ≤ 65）")
     else:
-        msgs.append(f"  ✗ RSI = {r['RSI']:.1f}  動能不足")
+        msgs.append(f"  ✗ RSI = {rsi:.1f}  動能偏弱（需 ≥ 40）")
 
-    # 條件3：量比 ≥ 1.2（有量配合）
-    if r['Vol_ratio'] >= 1.2:
+    # 條件3：量比 ≥ 0.5（有正常交易活動；回調日量縮是正常的，不強求放量）
+    vr = r['Vol_ratio']
+    if vr >= 0.5:
         score += 1
-        msgs.append(f"  ✓ 量比 = {r['Vol_ratio']:.2f}  有量配合")
+        if vr >= 1.2:
+            msgs.append(f"  ✓ 量比 = {vr:.2f}  有量配合（強勢）")
+        else:
+            msgs.append(f"  ✓ 量比 = {vr:.2f}  成交正常（回調量縮可接受）")
     else:
-        msgs.append(f"  ✗ 量比 = {r['Vol_ratio']:.2f}  量能不足")
+        msgs.append(f"  ✗ 量比 = {vr:.2f}  成交過度低迷（需 ≥ 0.5）")
 
-    # 條件4：現價距 MA5 ≤ 8%（不追高，新進場比加碼稍寬鬆）
+    # 條件4：現價距 MA5 ≤ 5%（靠近 MA5 支撐，不追高；回調到位才是好買點）
     close     = r['Close']
     ma5       = r['MA5']
     above_ma5 = (close - ma5) / ma5 * 100
-    if above_ma5 <= 8:
+    if above_ma5 <= 5:
         score += 1
-        msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，位置合理")
+        msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，靠近支撐位")
     else:
-        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，追高風險高（需 ≤ 8%）")
+        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，等回調至 MA5 附近再進（需 ≤ 5%）")
 
     return score, msgs
 
