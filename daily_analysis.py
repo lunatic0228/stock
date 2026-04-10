@@ -663,55 +663,80 @@ def building_signals(df):
 
 
 def entry_signals(df):
-    """新標的進場過濾器（回調進場策略，4個條件）
+    """新標的進場過濾器，支援兩種路徑：
 
-    設計邏輯：在多頭趨勢中等回調至 MA5 附近再進場，
-    避免追高買在漲幅末段（倒貨區）。
+    路徑A（回調進場）：在多頭趨勢中等回調至 MA5 附近再進
+      → 買在「量縮綠K」的支撐位，風險低
+      → 4 條件：MA5>MA10 + RSI 40~65 + 量比≥0.5 + 乖離≤5%
 
-    回調日通常是「量縮綠K」，條件刻意不要求放量，
-    量能爆發的突破訊號由盤中掃描的「💡量能突破」另行標記。
+    路徑B（突破確認）：整理後放量突破，當天就確認進場
+      → 買在「放量紅K」突破當日，搭上初升段
+      → 4 條件：MA5>MA10 + RSI 50~75 + 量比≥1.5 + 漲幅≥3%
+
+    回傳 (score, msgs)：
+      score = 路徑A分數（若路徑B完全達標，score 強制為 4）
     """
-    r = df.iloc[-1]
+    r    = df.iloc[-1]
     prev = df.iloc[-2]
-    score, msgs = 0, []
 
-    # 條件1：MA5 > MA10（多頭排列，大方向對才考慮進場）
+    close      = r['Close']
+    ma5        = r['MA5']
+    rsi        = r['RSI']
+    vr         = r['Vol_ratio']
+    above_ma5  = (close - ma5) / ma5 * 100
+    day_chg    = (close - prev['Close']) / prev['Close'] * 100
+
+    # ── 路徑 B：突破確認（優先判斷，達標直接回傳）────────────
+    b1 = r['MA5'] > r['MA10']
+    b2 = 50 <= rsi <= 75
+    b3 = vr >= 1.5
+    b4 = day_chg >= 3.0
+    if b1 and b2 and b3 and b4:
+        msgs = [
+            f"  🚀 突破確認進場（路徑B）",
+            f"  ✓ MA5({r['MA5']:.1f}) > MA10({r['MA10']:.1f})  多頭排列",
+            f"  ✓ RSI = {rsi:.1f}  突破動能健康（50~75）",
+            f"  ✓ 量比 = {vr:.2f}  放量突破",
+            f"  ✓ 今日漲幅 {day_chg:+.1f}%  啟動訊號",
+        ]
+        return 4, msgs
+
+    # ── 路徑 A：回調進場（4 條件逐一評分）───────────────────
+    score, msgs = 0, []
+    msgs.append(f"  📋 回調進場（路徑A）")
+
     if r['MA5'] > r['MA10']:
         score += 1
         msgs.append(f"  ✓ MA5({r['MA5']:.1f}) > MA10({r['MA10']:.1f})  多頭排列")
     else:
         msgs.append(f"  ✗ MA5({r['MA5']:.1f}) < MA10({r['MA10']:.1f})  空頭排列，暫不進場")
 
-    # 條件2：RSI 40~65（健康區間；>65 過熱追高風險高；<40 動能太弱）
-    rsi = r['RSI']
     if 40 <= rsi <= 65:
         score += 1
-        msgs.append(f"  ✓ RSI = {rsi:.1f}  位於健康進場區間（40~65）")
+        msgs.append(f"  ✓ RSI = {rsi:.1f}  健康進場區間（40~65）")
     elif rsi > 65:
-        msgs.append(f"  ✗ RSI = {rsi:.1f}  過熱，追高風險高（需 ≤ 65）")
+        msgs.append(f"  ✗ RSI = {rsi:.1f}  過熱，等回調（需 ≤ 65）")
     else:
         msgs.append(f"  ✗ RSI = {rsi:.1f}  動能偏弱（需 ≥ 40）")
 
-    # 條件3：量比 ≥ 0.5（有正常交易活動；回調日量縮是正常的，不強求放量）
-    vr = r['Vol_ratio']
     if vr >= 0.5:
         score += 1
-        if vr >= 1.2:
-            msgs.append(f"  ✓ 量比 = {vr:.2f}  有量配合（強勢）")
-        else:
-            msgs.append(f"  ✓ 量比 = {vr:.2f}  成交正常（回調量縮可接受）")
+        msgs.append(f"  ✓ 量比 = {vr:.2f}  {'放量' if vr >= 1.2 else '成交正常（回調量縮可接受）'}")
     else:
         msgs.append(f"  ✗ 量比 = {vr:.2f}  成交過度低迷（需 ≥ 0.5）")
 
-    # 條件4：現價距 MA5 ≤ 5%（靠近 MA5 支撐，不追高；回調到位才是好買點）
-    close     = r['Close']
-    ma5       = r['MA5']
-    above_ma5 = (close - ma5) / ma5 * 100
     if above_ma5 <= 5:
         score += 1
         msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，靠近支撐位")
     else:
-        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，等回調至 MA5 附近再進（需 ≤ 5%）")
+        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，等回調至 MA5 附近（需 ≤ 5%）")
+        # 提示路徑B還差多少
+        if r['MA5'] > r['MA10'] and 50 <= rsi <= 75:
+            missing = []
+            if vr < 1.5:  missing.append(f"量比需 ≥ 1.5（現 {vr:.2f}）")
+            if day_chg < 3: missing.append(f"漲幅需 ≥ 3%（現 {day_chg:+.1f}%）")
+            if missing:
+                msgs.append(f"  💡 突破路徑B還差：{' / '.join(missing)}")
 
     return score, msgs
 
