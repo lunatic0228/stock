@@ -350,93 +350,71 @@ with tab_watchlist:
 #  Tab 4：內部人申報
 # ════════════════════════════════════════════════════════════
 with tab_insider:
-    st.header("🕵 內部人大量持股轉讓掃描")
+    st.header("🕵 大股東增持掃描")
     st.caption(
-        "資料來源：證交所 IRB140 報表（董監事、經理人、大股東轉讓 **≥100萬股** 彙總）｜"
-        "每月次月中旬公告，上市＋上櫃全市場"
+        "資料來源：MOPS t93sb06_1「持股10%以上大股東最近異動」｜"
+        "篩出**增持**公司 → 自動跑技術分析 → 給出進場評分"
     )
 
     col_i1, col_i2, col_i3 = st.columns([2, 2, 1])
 
     with col_i1:
-        insider_months = st.select_slider(
-            "回溯月數",
-            options=[1, 2, 3, 6],
-            value=3,
-            help="IRB140 為月報，往前幾個月",
+        insider_days = st.select_slider(
+            "回溯天數",
+            options=[30, 60, 90],
+            value=60,
+            help="往前幾天的月報資料（月報有 1~2 個月時間差）",
         )
     with col_i2:
         insider_min_lots = st.number_input(
-            "最小轉讓張數（張）",
-            min_value=1000,
+            "最小增持張數（張）",
+            min_value=0,
             max_value=100000,
-            value=1000,
-            step=500,
-            help="IRB140 本身已篩 ≥1000 張（100萬股），可再提高門檻",
+            value=500,
+            step=100,
+            help="預設 500 張（約 30 筆，分析約 1 分鐘）；設 0 = 全部（約 150 筆，需 4 分鐘）",
         )
     with col_i3:
         st.write("")
         st.write("")
-        run_insider = st.button("🔍 掃描", type="primary", use_container_width=True)
+        run_insider = st.button("🔍 掃描分析", type="primary", use_container_width=True)
 
     st.divider()
 
     if not run_insider:
         st.info(
-            "點擊「掃描」查詢全市場大量持股轉讓申報。\n\n"
-            "**資料說明**\n"
-            "- 來源：[證交所 IRB140 彙總表](https://siis.twse.com.tw/publish/sii/)，不需登入、不受 IP 限制\n"
-            "- 僅涵蓋 **轉讓≥100萬股（≥1000張）** 的董監事、經理人、大股東\n"
-            "- 月報，通常在**次月中旬**公告，最近 1-2 個月可能尚未發布\n\n"
-            "**解讀建議**\n"
-            "- 大股東/董事長大量賣出 → 留意後市\n"
-            "- 法人大股東轉讓 → 確認是否為策略性減碼\n"
-            "- 張數越大、職位越高 → 訊號越重要"
+            "點擊「掃描分析」後系統會：\n\n"
+            "**① 抓資料**　MOPS 大股東持股異動，篩出本月比上月**增加**的公司\n\n"
+            "**② 技術分析**　每支股票跑 MA / RSI / 量比 / MACD / ATR\n\n"
+            "**③ 進場評分**　套用本系統進場條件（路徑A回調 / 路徑B突破），4分滿分\n\n"
+            "**④ 一氣呵成輸出**　現價、估值、停損線、進場建議\n\n"
+            "---\n"
+            "**注意**：月報有 1~2 個月時間差，增持訊號是**中線參考**，不是當天訊號。\n"
+            "API 全部免費（yfinance + TWSE OpenAPI），不消耗 FinMind 配額。"
         )
     else:
-        with st.spinner("查詢中，請稍候..."):
-            from insider import fetch_insider_changes
-            df_insider, err_insider = fetch_insider_changes(
-                days=insider_months * 31,
-                min_lots=int(insider_min_lots),
-            )
-
-        if err_insider:
-            st.error(f"查詢失敗：{err_insider}")
-        elif df_insider.empty:
-            st.warning(
-                f"近 {insider_months} 個月內沒有符合條件的申報資料（最小 {insider_min_lots:,} 張）。\n"
-                "可能是最近月份尚未公告，請嘗試增加回溯月數。"
-            )
-        else:
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("總筆數", len(df_insider))
-            mc2.metric("涉及公司數", df_insider["代號"].nunique() if "代號" in df_insider.columns else "-")
-            mc3.metric("最大單筆（張）", f"{df_insider['轉讓張數'].max():,}" if "轉讓張數" in df_insider.columns else "-")
-
-            # 轉讓張數越大越紅
-            def _color_lots(val):
-                if isinstance(val, (int, float)):
-                    if val >= 10000:
-                        return "color: #e74c3c; font-weight: bold"
-                    if val >= 3000:
-                        return "color: #e67e22; font-weight: bold"
-                return ""
-
+        with st.spinner("掃描中，請稍候（每支股票約 1~2 秒）..."):
+            import io, contextlib
+            from insider_scan import run_insider_scan
+            buf = io.StringIO()
+            err = None
             try:
-                styled = df_insider.style.map(_color_lots, subset=["轉讓張數"])
-            except AttributeError:
-                styled = df_insider.style.applymap(_color_lots, subset=["轉讓張數"])  # pandas < 2.1
+                with contextlib.redirect_stdout(buf):
+                    run_insider_scan(
+                        days_back=insider_days,
+                        min_lots=int(insider_min_lots),
+                    )
+            except Exception as e:
+                err = str(e)
 
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-
-            csv_bytes = df_insider.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            st.download_button(
-                "📥 下載 CSV",
-                data=csv_bytes,
-                file_name=f"insider_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-            )
+        if err:
+            st.error(f"執行錯誤：{err}")
+        else:
+            output = buf.getvalue()
+            if output:
+                st.code(output, language=None)
+            else:
+                st.warning("沒有輸出，請確認網路是否可連到 MOPS。")
 
 
 # ════════════════════════════════════════════════════════════
