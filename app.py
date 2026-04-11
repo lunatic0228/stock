@@ -423,8 +423,10 @@ with tab_insider:
                         return "color: #e67e22; font-weight: bold"
                 return ""
 
-            styled = df_insider.style.applymap(_color_lots, subset=["轉讓張數"]) \
-                if "轉讓張數" in df_insider.columns else df_insider.style
+            try:
+                styled = df_insider.style.map(_color_lots, subset=["轉讓張數"])
+            except AttributeError:
+                styled = df_insider.style.applymap(_color_lots, subset=["轉讓張數"])  # pandas < 2.1
 
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
