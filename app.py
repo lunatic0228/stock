@@ -350,34 +350,31 @@ with tab_watchlist:
 #  Tab 4：內部人申報
 # ════════════════════════════════════════════════════════════
 with tab_insider:
-    st.header("🕵 內部人持股異動申報掃描")
-    st.caption("全市場掃描董監事、大股東持股申報；資料來源：FinMind（TaiwanStockInsiderPurchaseSell）")
+    st.header("🕵 內部人大量持股轉讓掃描")
+    st.caption(
+        "資料來源：證交所 IRB140 報表（董監事、經理人、大股東轉讓 **≥100萬股** 彙總）｜"
+        "每月次月中旬公告，上市＋上櫃全市場"
+    )
 
-    col_i1, col_i2, col_i3, col_i4 = st.columns([1.5, 1.5, 1.5, 1])
+    col_i1, col_i2, col_i3 = st.columns([2, 2, 1])
 
     with col_i1:
-        insider_days = st.select_slider(
-            "回溯天數",
-            options=[7, 14, 30, 60, 90],
-            value=30,
-            help="從今天往前幾天的申報資料",
+        insider_months = st.select_slider(
+            "回溯月數",
+            options=[1, 2, 3, 6],
+            value=3,
+            help="IRB140 為月報，往前幾個月",
         )
     with col_i2:
         insider_min_lots = st.number_input(
-            "最小異動張數（張）",
-            min_value=1,
+            "最小轉讓張數（張）",
+            min_value=1000,
             max_value=100000,
-            value=100,
-            step=50,
-            help="1張=1000股。設 100 = 只顯示 10 萬股以上的異動",
+            value=1000,
+            step=500,
+            help="IRB140 本身已篩 ≥1000 張（100萬股），可再提高門檻",
         )
     with col_i3:
-        insider_event = st.selectbox(
-            "申報類型",
-            ["全部", "事前申請", "事後申報"],
-            help="事前申請：申請轉讓前的預告；事後申報：異動完成後才申報",
-        )
-    with col_i4:
         st.write("")
         st.write("")
         run_insider = st.button("🔍 掃描", type="primary", use_container_width=True)
@@ -386,52 +383,52 @@ with tab_insider:
 
     if not run_insider:
         st.info(
-            "設定篩選條件後點擊「掃描」。\n\n"
-            "**張數建議**：100 張以上抓到有意義的異動；500 張以上聚焦大戶。\n\n"
-            "**事前申請**：董監事「申請」轉讓，代表計畫賣出，是相對重要的警訊。\n"
-            "**事後申報**：異動已完成後補報，一般為買入或已賣完。"
+            "點擊「掃描」查詢全市場大量持股轉讓申報。\n\n"
+            "**資料說明**\n"
+            "- 來源：[證交所 IRB140 彙總表](https://siis.twse.com.tw/publish/sii/)，不需登入、不受 IP 限制\n"
+            "- 僅涵蓋 **轉讓≥100萬股（≥1000張）** 的董監事、經理人、大股東\n"
+            "- 月報，通常在**次月中旬**公告，最近 1-2 個月可能尚未發布\n\n"
+            "**解讀建議**\n"
+            "- 大股東/董事長大量賣出 → 留意後市\n"
+            "- 法人大股東轉讓 → 確認是否為策略性減碼\n"
+            "- 張數越大、職位越高 → 訊號越重要"
         )
     else:
-        from stocks import FINMIND_TOKEN
         with st.spinner("查詢中，請稍候..."):
             from insider import fetch_insider_changes
             df_insider, err_insider = fetch_insider_changes(
-                token=FINMIND_TOKEN,
-                days=insider_days,
+                days=insider_months * 31,
                 min_lots=int(insider_min_lots),
-                event_filter=insider_event,
             )
 
         if err_insider:
             st.error(f"查詢失敗：{err_insider}")
         elif df_insider.empty:
-            st.warning(f"近 {insider_days} 天內沒有符合條件的申報資料（最小 {insider_min_lots} 張）。")
+            st.warning(
+                f"近 {insider_months} 個月內沒有符合條件的申報資料（最小 {insider_min_lots:,} 張）。\n"
+                "可能是最近月份尚未公告，請嘗試增加回溯月數。"
+            )
         else:
-            # 統計摘要
-            total = len(df_insider)
-            buy_n  = (df_insider['方向'] == '買入 ▲').sum() if '方向' in df_insider.columns else 0
-            sell_n = (df_insider['方向'] == '賣出 ▼').sum() if '方向' in df_insider.columns else 0
-
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("共幾筆", total)
-            mc2.metric("買入", buy_n)
-            mc3.metric("賣出", sell_n)
+            mc1.metric("總筆數", len(df_insider))
+            mc2.metric("涉及公司數", df_insider["代號"].nunique() if "代號" in df_insider.columns else "-")
+            mc3.metric("最大單筆（張）", f"{df_insider['轉讓張數'].max():,}" if "轉讓張數" in df_insider.columns else "-")
 
-            # 顯示表格（買入綠色、賣出紅色）
-            def _color_dir(val):
-                if '▲' in str(val):
-                    return 'color: #2ecc71; font-weight: bold'
-                if '▼' in str(val):
-                    return 'color: #e74c3c; font-weight: bold'
-                return ''
+            # 轉讓張數越大越紅
+            def _color_lots(val):
+                if isinstance(val, (int, float)):
+                    if val >= 10000:
+                        return "color: #e74c3c; font-weight: bold"
+                    if val >= 3000:
+                        return "color: #e67e22; font-weight: bold"
+                return ""
 
-            styled = df_insider.style.applymap(_color_dir, subset=['方向']) \
-                if '方向' in df_insider.columns else df_insider.style
+            styled = df_insider.style.applymap(_color_lots, subset=["轉讓張數"]) \
+                if "轉讓張數" in df_insider.columns else df_insider.style
 
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
-            # 下載 CSV
-            csv_bytes = df_insider.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            csv_bytes = df_insider.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             st.download_button(
                 "📥 下載 CSV",
                 data=csv_bytes,
