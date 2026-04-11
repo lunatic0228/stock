@@ -289,7 +289,7 @@ def get_institutional(code):
 
     start = (now_tw() - timedelta(days=20)).strftime('%Y-%m-%d')
     params = {
-        'dataset':    'TaiwanStockInstitutionalInvestors',
+        'dataset':    'TaiwanStockInstitutionalInvestorsBuySell',
         'data_id':    code,
         'start_date': start,
     }
@@ -306,18 +306,18 @@ def get_institutional(code):
             _inst_cache[code] = None
             return None
 
-        # 依日期彙整三類法人
+        # 依日期彙整三類法人（name 欄位已改為英文）
         from collections import defaultdict
         by_date = defaultdict(dict)
         for r in body['data']:
             date = r['date']
             name = r.get('name', '')
-            net  = r.get('net_buy') or 0
-            if '外資' in name and '自營' not in name:
+            net  = (r.get('buy') or 0) - (r.get('sell') or 0)
+            if name == 'Foreign_Investor':
                 by_date[date]['外資'] = net
-            elif name == '投信':
+            elif name == 'Investment_Trust':
                 by_date[date]['投信'] = net
-            elif '自營商' in name and '避險' not in name:
+            elif name == 'Dealer_self':
                 by_date[date]['自營'] = net
 
         sorted_dates = sorted(by_date.keys())[-5:]
