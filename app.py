@@ -582,46 +582,6 @@ with tab_settings:
                     st.warning(f"已套用 {len(new_h)} 筆持股，但 Gist 同步失敗（請確認 GITHUB_TOKEN / GIST_ID）。")
                 st.rerun()
 
-        # 即時損益預覽
-        st.divider()
-        st.subheader("即時損益預覽")
-
-        if st.button("🔄 更新現價"):
-            _inject_holdings()
-            import yfinance as yf
-            import warnings
-            warnings.filterwarnings("ignore")
-
-            preview_rows = []
-            for ticker, h in st.session_state.holdings.items():
-                try:
-                    price = yf.Ticker(ticker).fast_info.get("last_price") or \
-                            yf.Ticker(ticker).history(period="2d").iloc[-1]["Close"]
-                except Exception:
-                    price = h["buy_price"]
-                pnl = (price - h["buy_price"]) / h["buy_price"] * 100
-                preview_rows.append({
-                    "代號":    ticker,
-                    "名稱":    h.get("name",""),
-                    "買入均價": h["buy_price"],
-                    "現價":    round(price, 2),
-                    "損益%":   round(pnl, 2),
-                    "持股數":  h["shares"],
-                    "市值":    round(price * h["shares"], 0),
-                })
-
-            df_preview = pd.DataFrame(preview_rows)
-            st.dataframe(
-                df_preview.style.applymap(
-                    lambda v: "color:red" if isinstance(v, float) and v < 0
-                              else ("color:green" if isinstance(v, float) and v > 0 else ""),
-                    subset=["損益%"]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("點擊「更新現價」查看即時損益（使用 yfinance，延遲約 15 分鐘）")
 
         # ── 觀察名單 ──────────────────────────────────────────
         st.divider()
