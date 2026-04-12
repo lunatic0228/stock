@@ -114,54 +114,50 @@ tab_analysis, tab_guide, tab_settings = st.tabs([
 # ════════════════════════════════════════════════════════════
 with tab_analysis:
     with st.sidebar:
-        # ── 一般功能 ─────────────────────────────────────────
         st.header("功能選單")
+
+        # ── 一般功能 ─────────────────────────────────────────
         mode = st.radio(
             "選擇功能",
             ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢"],
+            label_visibility="collapsed",
+            key="main_mode",
         )
         stock_code = None
         if "快速查詢" in mode:
             stock_code = st.text_input("股票代號", placeholder="例：2313　或　NVDA").strip()
 
+        # ── 進階工具 ─────────────────────────────────────────
         st.divider()
-        run_btn = st.button("▶ 執行分析", type="primary", use_container_width=True)
+        st.caption("🔬 進階工具")
+        adv_mode = st.radio(
+            "進階工具",
+            ["🕵 大股東增持掃描"],
+            label_visibility="collapsed",
+            index=None,          # 預設不選中任何項目
+            key="adv_mode",
+        )
 
+        # 選了進階工具 → 顯示對應參數（和快速查詢文字框同個模式）
+        insider_days, insider_min_lots, insider_min_vol = 60, 500, 500
+        if adv_mode and "大股東" in adv_mode:
+            insider_days = st.select_slider(
+                "回溯天數", options=[30, 60, 90], value=60,
+            )
+            insider_min_lots = st.number_input(
+                "最小增持張數（張）",
+                min_value=0, max_value=100000, value=500, step=100,
+                help="0 = 全部（約 150 筆，需 4 分鐘）",
+            )
+            insider_min_vol = st.number_input(
+                "最低日均量（張）",
+                min_value=0, max_value=100000, value=500, step=100,
+                help="近20日日均量低於此值略過",
+            )
+
+        # ── 共用執行按鈕 ──────────────────────────────────────
         st.divider()
-        st.markdown("""
-**說明**
-- 📊 盤後分析：持倉警示＋進場機會
-- 🔎 盤中掃描：持倉即時量能＋內外盤
-- 👁 觀察名單：所有觀察標的進場條件
-- ⚡ 快速查詢：單股深度分析
-        """)
-
-        # ── 進階功能 ─────────────────────────────────────────
-        st.divider()
-        st.markdown("#### 🔬 進階功能")
-
-        insider_days = st.select_slider(
-            "回溯天數",
-            options=[30, 60, 90],
-            value=60,
-            key="sb_insider_days",
-            help="往前追溯幾天的大股東異動月報",
-        )
-        insider_min_lots = st.number_input(
-            "最小增持張數",
-            min_value=0, max_value=100000, value=500, step=100,
-            key="sb_insider_lots",
-            help="0 = 不過濾（約 150 筆，需 4 分鐘）",
-        )
-        insider_min_vol = st.number_input(
-            "最低日均量（張）",
-            min_value=0, max_value=100000, value=500, step=100,
-            key="sb_insider_vol",
-            help="近20日日均量低於此值略過（流動性過濾）",
-        )
-        run_insider_btn = st.button(
-            "🕵 大股東增持掃描", type="secondary", use_container_width=True
-        )
+        run_btn = st.button("▶ 執行", type="primary", use_container_width=True)
 
         st.divider()
         if st.button("🔒 登出", use_container_width=True):
@@ -169,9 +165,44 @@ with tab_analysis:
             st.session_state.holdings_unlocked = False
             st.rerun()
 
-    # ── 主畫面：一般功能 ──────────────────────────────────────
-    if not run_btn and not run_insider_btn:
-        st.info("👈 左側選擇功能後點擊「執行分析」，或點「大股東增持掃描」執行進階分析")
+    # ── 主畫面 ────────────────────────────────────────────────
+    # 進階工具被選中時，一般 mode 的按鈕效果忽略
+    active_adv = adv_mode and run_btn
+
+    if active_adv and "大股東" in adv_mode:
+        st.header("🕵 大股東增持掃描")
+        st.caption(
+            "資料來源：MOPS t93sb06_1（持股10%以上大股東最近異動）＋ yfinance＋TWSE OpenAPI｜"
+            "月報有 1~2 個月時間差，僅供中線參考。"
+        )
+        with st.spinner("掃描中，請稍候（每支股票約 1~2 秒）..."):
+            from insider_scan_beta import run_insider_scan_beta
+            buf = io.StringIO()
+            err = None
+            try:
+                with contextlib.redirect_stdout(buf):
+                    run_insider_scan_beta(
+                        days_back=int(insider_days),
+                        min_lots=int(insider_min_lots),
+                        min_avg_vol=int(insider_min_vol),
+                    )
+            except Exception as e:
+                err = str(e)
+        if err:
+            st.error(f"執行錯誤：{err}")
+        else:
+            output = buf.getvalue()
+            if output:
+                st.code(output, language=None)
+            else:
+                st.warning("沒有輸出，請確認網路是否可連到 MOPS。")
+
+    elif adv_mode and not run_btn:
+        # 選了進階工具但還沒按執行
+        st.info("👈 左側設定參數後點擊「執行」")
+
+    elif not run_btn:
+        st.info("👈 左側選擇功能後點擊「執行」")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown("### 📊 盤後分析")
@@ -186,7 +217,7 @@ with tab_analysis:
             st.markdown("### ⚡ 快速查詢")
             st.write("輸入股票代號，即時技術指標與進出場訊號。")
 
-    elif run_btn:
+    else:  # run_btn，且進階工具未選中 → 執行一般功能
         _inject_holdings()
         with st.spinner("分析中，請稍候..."):
             buf = io.StringIO()
@@ -215,35 +246,6 @@ with tab_analysis:
             st.code(output, language=None)
         elif not err:
             st.warning("沒有輸出，請確認設定是否正確。")
-
-    else:  # run_insider_btn
-        st.header("🕵 大股東增持掃描")
-        st.caption(
-            "資料來源：MOPS t93sb06_1（持股10%以上大股東最近異動）＋ yfinance＋TWSE OpenAPI｜"
-            "月報有 1~2 個月時間差，僅供中線參考。"
-        )
-        with st.spinner("掃描中，請稍候（每支股票約 1~2 秒）..."):
-            from insider_scan_beta import run_insider_scan_beta
-            buf = io.StringIO()
-            err = None
-            try:
-                with contextlib.redirect_stdout(buf):
-                    run_insider_scan_beta(
-                        days_back=int(insider_days),
-                        min_lots=int(insider_min_lots),
-                        min_avg_vol=int(insider_min_vol),
-                    )
-            except Exception as e:
-                err = str(e)
-
-        if err:
-            st.error(f"執行錯誤：{err}")
-        else:
-            output = buf.getvalue()
-            if output:
-                st.code(output, language=None)
-            else:
-                st.warning("沒有輸出，請確認網路是否可連到 MOPS。")
 
 
 # ════════════════════════════════════════════════════════════
