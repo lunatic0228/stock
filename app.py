@@ -123,7 +123,7 @@ weekday_map = ["一","二","三","四","五","六","日"]
 st.title("📈 台股個人分析系統")
 st.caption(f"{now.strftime('%Y-%m-%d')}（週{weekday_map[now.weekday()]}）  {now.strftime('%H:%M')}")
 
-tab_analysis, tab_holdings, tab_watchlist, tab_insider, tab_guide = st.tabs(["📊 分析", "💼 持股管理", "👁 觀察名單", "🕵 內部人申報", "📖 指標說明"])
+tab_analysis, tab_holdings, tab_watchlist, tab_insider, tab_beta, tab_guide = st.tabs(["📊 分析", "💼 持股管理", "👁 觀察名單", "🕵 內部人申報", "🧪 Beta", "📖 指標說明"])
 
 
 # ════════════════════════════════════════════════════════════
@@ -418,7 +418,99 @@ with tab_insider:
 
 
 # ════════════════════════════════════════════════════════════
-#  Tab 5：指標說明
+#  Tab 5：Beta — 大股東增持掃描（含流動性過濾）
+# ════════════════════════════════════════════════════════════
+with tab_beta:
+    st.header("🧪 Beta：大股東增持掃描（含流動性過濾）")
+    st.caption(
+        "資料來源：MOPS t93sb06_1（持股10%以上大股東最近異動情形）＋ yfinance＋TWSE OpenAPI  |  "
+        "月報資料有 1~2 個月時間差，僅供參考。"
+    )
+    st.info(
+        "**Beta 新功能（相較「內部人申報」分頁）**\n\n"
+        "- 顯示近20日日均交易量（張）\n"
+        "- 自動過濾日均量不足門檻的標的（流動性不足略過）"
+    )
+
+    col_b1, col_b2, col_b3, col_b4 = st.columns([2, 2, 2, 1])
+
+    with col_b1:
+        beta_days = st.select_slider(
+            "回溯天數",
+            options=[30, 60, 90],
+            value=60,
+            key="beta_days",
+            help="往前追溯幾天的大股東異動資料",
+        )
+    with col_b2:
+        beta_min_lots = st.number_input(
+            "最小增持張數（張）",
+            min_value=0,
+            max_value=100000,
+            value=500,
+            step=100,
+            key="beta_min_lots",
+            help="增持張數低於此值的紀錄不列入分析（0 = 不過濾）",
+        )
+    with col_b3:
+        beta_min_vol = st.number_input(
+            "最低日均量（張）",
+            min_value=0,
+            max_value=100000,
+            value=500,
+            step=100,
+            key="beta_min_vol",
+            help="近20日日均成交張數低於此值的標的將略過（流動性過濾）",
+        )
+    with col_b4:
+        st.write("")
+        st.write("")
+        run_beta = st.button("🔍 掃描", type="primary", use_container_width=True, key="run_beta")
+
+    st.divider()
+
+    if not run_beta:
+        st.info(
+            "點擊「掃描」後系統會：\n\n"
+            "**① 抓資料**　MOPS 大股東持股異動，篩出本月比上月**增加**的公司\n\n"
+            "**② 流動性過濾**　日均量 < 門檻 → 略過，避免抓到私募或冷門股\n\n"
+            "**③ 技術分析**　每支股票跑 MA / RSI / 量比 / MACD / ATR\n\n"
+            "**④ 進場評分**　套用本系統進場條件，4分滿分\n\n"
+            "---\n"
+            "⚠️ 此為 Beta 測試版，穩定後將取代「內部人申報」分頁。"
+        )
+    else:
+        with st.spinner("掃描中，請稍候（每支股票約 1~2 秒）..."):
+            try:
+                import insider_scan_beta as _isb
+            except ImportError as _ie:
+                st.error(f"無法載入 insider_scan_beta 模組：{_ie}")
+                st.stop()
+
+            buf = io.StringIO()
+            _err = None
+            try:
+                with contextlib.redirect_stdout(buf):
+                    _isb.run_insider_scan_beta(
+                        days_back=int(beta_days),
+                        min_lots=int(beta_min_lots),
+                        min_avg_vol=int(beta_min_vol),
+                    )
+            except Exception as _e:
+                _err = str(_e)
+
+        if _err:
+            st.error(f"執行錯誤：{_err}")
+        else:
+            _output = buf.getvalue()
+            if _output:
+                st.code(_output, language=None)
+            else:
+                st.warning("沒有輸出，請確認網路是否可連到 MOPS。")
+
+
+# ════════════════════════════════════════════════════════════
+#  Tab 6：指標說明
 # ════════════════════════════════════════════════════════════
 with tab_guide:
     st.header("📖 指標說明")
