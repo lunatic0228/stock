@@ -116,31 +116,23 @@ with tab_analysis:
     with st.sidebar:
         st.header("功能選單")
 
-        # ── 一般功能 ─────────────────────────────────────────
+        # 一個 radio 涵蓋所有選項，進階區塊用 caption 標示
         mode = st.radio(
             "選擇功能",
-            ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢"],
+            ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢",
+             "🕵 大股東增持掃描"],
             label_visibility="collapsed",
-            key="main_mode",
+            captions=["", "", "", "", "🔬 進階工具"],
         )
+
+        # 依選項顯示對應參數
         stock_code = None
+        insider_days, insider_min_lots, insider_min_vol = 60, 500, 500
+
         if "快速查詢" in mode:
             stock_code = st.text_input("股票代號", placeholder="例：2313　或　NVDA").strip()
 
-        # ── 進階工具 ─────────────────────────────────────────
-        st.divider()
-        st.caption("🔬 進階工具")
-        adv_mode = st.radio(
-            "進階工具",
-            ["🕵 大股東增持掃描"],
-            label_visibility="collapsed",
-            index=None,          # 預設不選中任何項目
-            key="adv_mode",
-        )
-
-        # 選了進階工具 → 顯示對應參數（和快速查詢文字框同個模式）
-        insider_days, insider_min_lots, insider_min_vol = 60, 500, 500
-        if adv_mode and "大股東" in adv_mode:
+        if "大股東" in mode:
             insider_days = st.select_slider(
                 "回溯天數", options=[30, 60, 90], value=60,
             )
@@ -155,10 +147,8 @@ with tab_analysis:
                 help="近20日日均量低於此值略過",
             )
 
-        # ── 共用執行按鈕 ──────────────────────────────────────
         st.divider()
         run_btn = st.button("▶ 執行", type="primary", use_container_width=True)
-
         st.divider()
         if st.button("🔒 登出", use_container_width=True):
             st.session_state.authenticated    = False
@@ -166,10 +156,7 @@ with tab_analysis:
             st.rerun()
 
     # ── 主畫面 ────────────────────────────────────────────────
-    # 進階工具被選中時，一般 mode 的按鈕效果忽略
-    active_adv = adv_mode and run_btn
-
-    if active_adv and "大股東" in adv_mode:
+    if "大股東" in mode and run_btn:
         st.header("🕵 大股東增持掃描")
         st.caption(
             "資料來源：MOPS t93sb06_1（持股10%以上大股東最近異動）＋ yfinance＋TWSE OpenAPI｜"
@@ -197,8 +184,7 @@ with tab_analysis:
             else:
                 st.warning("沒有輸出，請確認網路是否可連到 MOPS。")
 
-    elif adv_mode and not run_btn:
-        # 選了進階工具但還沒按執行
+    elif "大股東" in mode and not run_btn:
         st.info("👈 左側設定參數後點擊「執行」")
 
     elif not run_btn:
@@ -217,7 +203,7 @@ with tab_analysis:
             st.markdown("### ⚡ 快速查詢")
             st.write("輸入股票代號，即時技術指標與進出場訊號。")
 
-    else:  # run_btn，且進階工具未選中 → 執行一般功能
+    else:  # run_btn，一般功能
         _inject_holdings()
         with st.spinner("分析中，請稍候..."):
             buf = io.StringIO()
