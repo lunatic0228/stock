@@ -18,17 +18,14 @@ st.set_page_config(
 #  密碼鎖（整個 app 的入口）
 # ════════════════════════════════════════════════════════════
 def _check_pin():
-    """回傳 True 表示已解鎖，False 表示顯示密碼頁面並停止後續渲染"""
     if st.session_state.get("authenticated"):
         return True
 
-    # 讀取 PIN（優先 Secrets，備援 hardcode）
     try:
         correct_pin = st.secrets.get("APP_PIN", "0202")
     except Exception:
         correct_pin = "0202"
 
-    # 置中卡片樣式
     st.markdown("""
     <style>
     .pin-box {
@@ -68,51 +65,35 @@ def _check_pin():
             else:
                 st.error("密碼錯誤，請重試")
 
-    return False   # 尚未解鎖，後面的程式碼不執行
+    return False
 
 if not _check_pin():
     st.stop()
 
-# ── Session State 初始化（第一次載入從 stocks.py / watchlist.py 讀） ─
+
+# ── Session State 初始化（優先從 Gist 讀，Gist 無資料才 fallback） ──
 def _init():
     if "holdings" not in st.session_state:
-        from stocks import HOLDINGS
-        from watchlist import WATCHLIST
-        st.session_state.holdings  = {k: dict(v) for k, v in HOLDINGS.items()}
-        st.session_state.watchlist = {k: list(v) for k, v in WATCHLIST.items()}
+        from gist_storage import load_from_gist
+        gist_data = load_from_gist()
+        if gist_data:
+            st.session_state.holdings  = gist_data["holdings"]
+            st.session_state.watchlist = gist_data["watchlist"]
+        else:
+            from stocks import HOLDINGS
+            from watchlist import WATCHLIST
+            st.session_state.holdings  = {k: dict(v) for k, v in HOLDINGS.items()}
+            st.session_state.watchlist = {k: list(v) for k, v in WATCHLIST.items()}
 
 _init()
 
 
 # ── 工具：把 session_state 注入 daily_analysis 模組 ─────────
 def _inject_holdings():
-    """讓 daily_analysis 使用 session_state 中最新的持股 + 觀察名單"""
     import importlib, daily_analysis
-    importlib.reload(daily_analysis)          # 強制重載，避免 Streamlit module cache 問題
+    importlib.reload(daily_analysis)
     daily_analysis.HOLDINGS  = st.session_state.holdings
     daily_analysis.WATCHLIST = st.session_state.watchlist
-
-
-# ── 工具：產生 secrets.toml 內容 ────────────────────────────
-def _gen_secrets_toml():
-    from stocks import FUGLE_API_KEY, FINMIND_TOKEN
-    lines = [
-        f'FUGLE_API_KEY  = "{FUGLE_API_KEY}"',
-        f'FINMIND_TOKEN  = "{FINMIND_TOKEN}"',
-        "",
-        "[watchlist]",
-        f'tw = {st.session_state.watchlist.get("tw", [])}',
-        "",
-    ]
-    for ticker, h in st.session_state.holdings.items():
-        lines.append(f'[holdings."{ticker}"]')
-        lines.append(f'name      = "{h.get("name","")}"')
-        lines.append(f'buy_price = {h["buy_price"]}')
-        lines.append(f'shares    = {h["shares"]}')
-        lines.append(f'avg_down  = {"true" if h.get("avg_down") else "false"}')
-        lines.append(f'building  = {"true" if h.get("building") else "false"}')
-        lines.append("")
-    return "\n".join(lines)
 
 
 # ════════════════════════════════════════════════════════════
@@ -123,7 +104,9 @@ weekday_map = ["一","二","三","四","五","六","日"]
 st.title("📈 台股個人分析系統")
 st.caption(f"{now.strftime('%Y-%m-%d')}（週{weekday_map[now.weekday()]}）  {now.strftime('%H:%M')}")
 
-tab_analysis, tab_holdings, tab_watchlist, tab_insider, tab_beta, tab_guide = st.tabs(["📊 分析", "💼 持股管理", "👁 觀察名單", "🕵 內部人申報", "🧪 Beta", "📖 指標說明"])
+tab_analysis, tab_insider, tab_beta, tab_guide, tab_settings = st.tabs([
+    "📊 分析", "🕵 內部人申報", "🧪 Beta", "📖 指標說明", "⚙️ 設定"
+])
 
 
 # ════════════════════════════════════════════════════════════
@@ -152,7 +135,8 @@ with tab_analysis:
         """)
         st.divider()
         if st.button("🔒 登出", use_container_width=True):
-            st.session_state.authenticated = False
+            st.session_state.authenticated   = False
+            st.session_state.holdings_unlocked = False
             st.rerun()
 
     if not run_btn:
@@ -171,7 +155,7 @@ with tab_analysis:
             st.markdown("### ⚡ 快速查詢")
             st.write("輸入股票代號，即時技術指標與進出場訊號。")
     else:
-        _inject_holdings()   # 同時 reload + 注入最新持股 / 觀察名單
+        _inject_holdings()
         with st.spinner("分析中，請稍候..."):
             buf = io.StringIO()
             err = None
@@ -202,152 +186,7 @@ with tab_analysis:
 
 
 # ════════════════════════════════════════════════════════════
-#  Tab 2：持股管理
-# ════════════════════════════════════════════════════════════
-with tab_holdings:
-    st.header("💼 持股管理")
-    st.caption("直接在表格內編輯，點「套用變更」後當次分析立即生效。下載 secrets.toml 可永久儲存。")
-
-    # 持股 → DataFrame
-    rows = []
-    for ticker, h in st.session_state.holdings.items():
-        rows.append({
-            "代號":   ticker,
-            "名稱":   h.get("name", ""),
-            "買入均價": float(h["buy_price"]),
-            "持股數":  int(h["shares"]),
-            "攤平候選": bool(h.get("avg_down", False)),
-            "建倉中":  bool(h.get("building", False)),
-        })
-
-    df_h = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["代號","名稱","買入均價","持股數","攤平候選","建倉中"])
-
-    edited_h = st.data_editor(
-        df_h,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "代號":    st.column_config.TextColumn("代號", help="例：2313.TW"),
-            "名稱":    st.column_config.TextColumn("名稱"),
-            "買入均價": st.column_config.NumberColumn("買入均價", format="%.2f", min_value=0.0),
-            "持股數":  st.column_config.NumberColumn("持股數", format="%d", min_value=0),
-            "攤平候選": st.column_config.CheckboxColumn("攤平候選", help="深套，等超賣反彈訊號"),
-            "建倉中":  st.column_config.CheckboxColumn("建倉中",  help="已建部位，持續順勢加碼"),
-        },
-    )
-
-    col_a, col_b, col_c = st.columns([2, 2, 3])
-
-    with col_a:
-        if st.button("✅ 套用變更", type="primary", use_container_width=True):
-            new_h = {}
-            for _, row in edited_h.iterrows():
-                t = str(row.get("代號", "")).strip()
-                if not t:
-                    continue
-                new_h[t] = {
-                    "name":      str(row.get("名稱", t)),
-                    "buy_price": float(row.get("買入均價", 0)),
-                    "shares":    int(row.get("持股數", 0)),
-                    "avg_down":  bool(row.get("攤平候選", False)),
-                    "building":  bool(row.get("建倉中",  False)),
-                }
-            st.session_state.holdings = new_h
-            st.success(f"已套用！共 {len(new_h)} 筆持股，分析時將使用最新資料。")
-            st.rerun()
-
-    with col_b:
-        toml_content = _gen_secrets_toml()
-        st.download_button(
-            "📥 下載 secrets.toml",
-            data=toml_content,
-            file_name="secrets.toml",
-            mime="text/plain",
-            use_container_width=True,
-            help="下載後貼到 Streamlit Cloud Secrets，永久儲存持股設定",
-        )
-
-    with col_c:
-        st.info("💡 **永久儲存方式**：下載 secrets.toml → 開啟 Streamlit Cloud → 你的 App → Settings → Secrets → 全部取代貼上 → Save")
-
-    # 即時損益預覽
-    st.divider()
-    st.subheader("即時損益預覽")
-
-    if st.button("🔄 更新現價"):
-        _inject_holdings()
-        import yfinance as yf
-        import warnings
-        warnings.filterwarnings("ignore")
-
-        preview_rows = []
-        for ticker, h in st.session_state.holdings.items():
-            try:
-                price = yf.Ticker(ticker).fast_info.get("last_price") or \
-                        yf.Ticker(ticker).history(period="2d").iloc[-1]["Close"]
-            except Exception:
-                price = h["buy_price"]
-            pnl = (price - h["buy_price"]) / h["buy_price"] * 100
-            preview_rows.append({
-                "代號":   ticker,
-                "名稱":   h.get("name",""),
-                "買入均價": h["buy_price"],
-                "現價":   round(price, 2),
-                "損益%":  round(pnl, 2),
-                "持股數":  h["shares"],
-                "市值":   round(price * h["shares"], 0),
-            })
-
-        df_preview = pd.DataFrame(preview_rows)
-        st.dataframe(
-            df_preview.style.applymap(
-                lambda v: "color:red" if isinstance(v, float) and v < 0
-                          else ("color:green" if isinstance(v, float) and v > 0 else ""),
-                subset=["損益%"]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.caption("點擊「更新現價」查看即時損益（使用 yfinance，延遲約 15 分鐘）")
-
-
-# ════════════════════════════════════════════════════════════
-#  Tab 3：觀察名單
-# ════════════════════════════════════════════════════════════
-with tab_watchlist:
-    st.header("👁 觀察名單管理")
-    st.caption("管理想追蹤但尚未持有的股票。變更後當次分析立即生效。")
-
-    tw_list = st.session_state.watchlist.get("tw", [])
-
-    # 用 data_editor 顯示可編輯清單
-    wl_df = pd.DataFrame({"代號": tw_list})
-    edited_wl = st.data_editor(
-        wl_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "代號": st.column_config.TextColumn("股票代號（只填數字）", help="例：2330、6285"),
-        },
-        hide_index=True,
-        key="wl_editor",
-    )
-
-    col_save, col_info = st.columns([1, 2])
-    with col_save:
-        if st.button("✅ 套用變更", type="primary", use_container_width=True, key="wl_save_btn"):
-            new_tw = [str(r).strip() for r in edited_wl["代號"].dropna() if str(r).strip()]
-            st.session_state.watchlist["tw"] = new_tw
-            st.success(f"已更新 {len(new_tw)} 支觀察名單，下次執行分析立即生效。")
-            st.rerun()
-    with col_info:
-        st.info("💡 永久儲存：直接修改 GitHub 上的 `watchlist.py` 即可。")
-
-
-# ════════════════════════════════════════════════════════════
-#  Tab 4：內部人申報
+#  Tab 2：內部人申報
 # ════════════════════════════════════════════════════════════
 with tab_insider:
     st.header("🕵 大股東增持掃描")
@@ -394,7 +233,6 @@ with tab_insider:
         )
     else:
         with st.spinner("掃描中，請稍候（每支股票約 1~2 秒）..."):
-            import io, contextlib
             from insider_scan import run_insider_scan
             buf = io.StringIO()
             err = None
@@ -418,7 +256,7 @@ with tab_insider:
 
 
 # ════════════════════════════════════════════════════════════
-#  Tab 5：Beta — 大股東增持掃描（含流動性過濾）
+#  Tab 3：Beta — 大股東增持掃描（含流動性過濾）
 # ════════════════════════════════════════════════════════════
 with tab_beta:
     st.header("🧪 Beta：大股東增持掃描（含流動性過濾）")
@@ -510,13 +348,12 @@ with tab_beta:
 
 
 # ════════════════════════════════════════════════════════════
-#  Tab 6：指標說明
+#  Tab 4：指標說明
 # ════════════════════════════════════════════════════════════
 with tab_guide:
     st.header("📖 指標說明")
     st.caption("快速查閱本系統使用的技術指標含義與判斷標準")
 
-    # ── 趨勢指標 ──────────────────────────────────────────
     st.subheader("📈 趨勢指標")
     col1, col2 = st.columns(2)
 
@@ -550,7 +387,6 @@ with tab_guide:
 
     st.divider()
 
-    # ── 動能指標 ──────────────────────────────────────────
     st.subheader("⚡ 動能指標")
     col3, col4 = st.columns(2)
 
@@ -585,7 +421,6 @@ with tab_guide:
 
     st.divider()
 
-    # ── 量能指標 ──────────────────────────────────────────
     st.subheader("📊 量能指標")
     col5, col6 = st.columns(2)
 
@@ -622,7 +457,6 @@ with tab_guide:
 
     st.divider()
 
-    # ── 風控指標 ──────────────────────────────────────────
     st.subheader("🛡 風控指標")
     col7, col8 = st.columns(2)
 
@@ -659,3 +493,163 @@ with tab_guide:
 - 🟢 乖離 >8% + RSI >70 → 減碼 30%
 - 🟢 乖離 >12% + RSI >78 → 強力出清
         """)
+
+
+# ════════════════════════════════════════════════════════════
+#  Tab 5：設定（持股管理 + 觀察名單，PIN 保護）
+# ════════════════════════════════════════════════════════════
+with tab_settings:
+    st.header("⚙️ 設定")
+
+    # ── PIN 鎖 ───────────────────────────────────────────────
+    if not st.session_state.get("holdings_unlocked"):
+        try:
+            holdings_pin = st.secrets.get("HOLDINGS_PIN", "0000")
+        except Exception:
+            holdings_pin = "0000"
+
+        st.info("🔒 設定頁面受額外保護，請輸入密碼")
+        col_pl, col_pm, col_pr = st.columns([1, 1.2, 1])
+        with col_pm:
+            h_pin_input = st.text_input(
+                "設定密碼",
+                type="password",
+                max_chars=4,
+                placeholder="• • • •",
+                label_visibility="collapsed",
+                key="holdings_pin_input",
+            )
+            if st.button("解鎖設定", type="primary", use_container_width=True):
+                if h_pin_input == holdings_pin:
+                    st.session_state.holdings_unlocked = True
+                    st.rerun()
+                else:
+                    st.error("密碼錯誤")
+    else:
+        # ── 持股管理 ─────────────────────────────────────────
+        st.subheader("💼 持股管理")
+        st.caption("直接在表格內編輯，點「套用變更」後自動同步到雲端，任何裝置皆生效。")
+
+        rows = []
+        for ticker, h in st.session_state.holdings.items():
+            rows.append({
+                "代號":    ticker,
+                "名稱":    h.get("name", ""),
+                "買入均價": float(h["buy_price"]),
+                "持股數":  int(h["shares"]),
+                "攤平候選": bool(h.get("avg_down", False)),
+                "建倉中":  bool(h.get("building", False)),
+            })
+
+        df_h = pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["代號","名稱","買入均價","持股數","攤平候選","建倉中"])
+
+        edited_h = st.data_editor(
+            df_h,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "代號":    st.column_config.TextColumn("代號", help="例：2313.TW"),
+                "名稱":    st.column_config.TextColumn("名稱"),
+                "買入均價": st.column_config.NumberColumn("買入均價", format="%.2f", min_value=0.0),
+                "持股數":  st.column_config.NumberColumn("持股數", format="%d", min_value=0),
+                "攤平候選": st.column_config.CheckboxColumn("攤平候選", help="深套，等超賣反彈訊號"),
+                "建倉中":  st.column_config.CheckboxColumn("建倉中",  help="已建部位，持續順勢加碼"),
+            },
+        )
+
+        col_ha, col_hb = st.columns([1, 3])
+        with col_ha:
+            if st.button("✅ 套用持股變更", type="primary", use_container_width=True):
+                new_h = {}
+                for _, row in edited_h.iterrows():
+                    t = str(row.get("代號", "")).strip()
+                    if not t:
+                        continue
+                    new_h[t] = {
+                        "name":      str(row.get("名稱", t)),
+                        "buy_price": float(row.get("買入均價", 0)),
+                        "shares":    int(row.get("持股數", 0)),
+                        "avg_down":  bool(row.get("攤平候選", False)),
+                        "building":  bool(row.get("建倉中",  False)),
+                    }
+                st.session_state.holdings = new_h
+                from gist_storage import save_to_gist
+                ok = save_to_gist(st.session_state.holdings, st.session_state.watchlist)
+                if ok:
+                    st.success(f"已套用並同步儲存！共 {len(new_h)} 筆持股。")
+                else:
+                    st.warning(f"已套用 {len(new_h)} 筆持股，但 Gist 同步失敗（請確認 GITHUB_TOKEN / GIST_ID）。")
+                st.rerun()
+
+        # 即時損益預覽
+        st.divider()
+        st.subheader("即時損益預覽")
+
+        if st.button("🔄 更新現價"):
+            _inject_holdings()
+            import yfinance as yf
+            import warnings
+            warnings.filterwarnings("ignore")
+
+            preview_rows = []
+            for ticker, h in st.session_state.holdings.items():
+                try:
+                    price = yf.Ticker(ticker).fast_info.get("last_price") or \
+                            yf.Ticker(ticker).history(period="2d").iloc[-1]["Close"]
+                except Exception:
+                    price = h["buy_price"]
+                pnl = (price - h["buy_price"]) / h["buy_price"] * 100
+                preview_rows.append({
+                    "代號":    ticker,
+                    "名稱":    h.get("name",""),
+                    "買入均價": h["buy_price"],
+                    "現價":    round(price, 2),
+                    "損益%":   round(pnl, 2),
+                    "持股數":  h["shares"],
+                    "市值":    round(price * h["shares"], 0),
+                })
+
+            df_preview = pd.DataFrame(preview_rows)
+            st.dataframe(
+                df_preview.style.applymap(
+                    lambda v: "color:red" if isinstance(v, float) and v < 0
+                              else ("color:green" if isinstance(v, float) and v > 0 else ""),
+                    subset=["損益%"]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("點擊「更新現價」查看即時損益（使用 yfinance，延遲約 15 分鐘）")
+
+        # ── 觀察名單 ──────────────────────────────────────────
+        st.divider()
+        st.subheader("👁 觀察名單")
+        st.caption("管理想追蹤但尚未持有的股票。")
+
+        tw_list = st.session_state.watchlist.get("tw", [])
+        wl_df = pd.DataFrame({"代號": tw_list})
+        edited_wl = st.data_editor(
+            wl_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "代號": st.column_config.TextColumn("股票代號（只填數字）", help="例：2330、6285"),
+            },
+            hide_index=True,
+            key="wl_editor",
+        )
+
+        col_wa, col_wb = st.columns([1, 3])
+        with col_wa:
+            if st.button("✅ 套用觀察名單", type="primary", use_container_width=True, key="wl_save_btn"):
+                new_tw = [str(r).strip() for r in edited_wl["代號"].dropna() if str(r).strip()]
+                st.session_state.watchlist["tw"] = new_tw
+                from gist_storage import save_to_gist
+                ok = save_to_gist(st.session_state.holdings, st.session_state.watchlist)
+                if ok:
+                    st.success(f"已更新 {len(new_tw)} 支觀察名單並同步儲存。")
+                else:
+                    st.warning(f"已更新 {len(new_tw)} 支觀察名單，但 Gist 同步失敗（請確認 GITHUB_TOKEN / GIST_ID）。")
+                st.rerun()
