@@ -251,6 +251,12 @@ def _apply_fugle_price(df, price, is_intraday=False):
         # 盤中：MA5/MA10 不動，Vol_MA5 用前一日穩定值
         if len(df) >= 2 and df.iloc[-2]['Vol_MA5'] > 0:
             df.iloc[-1, df.columns.get_loc('Vol_MA5')] = df.iloc[-2]['Vol_MA5']
+        # RSI 需用即時價重算（MA 不動是避免假破線，但 RSI 反映當下動能應即時）
+        c = df['Close']
+        delta = c.diff()
+        gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        df['RSI'] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
     else:
         # 盤後：重算 MA5/MA10（今日收盤已是最終值）
         df['MA5']    = df['Close'].rolling(5).mean()
@@ -452,6 +458,9 @@ def calculate_indicators(df):
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     df['ATR'] = tr.rolling(14).mean()
 
+    # 近22日最高收盤（吊燈出場用）
+    df['High22'] = close.rolling(22).max()
+
     # 成交量比（今日量 / 5日均量）
     df['Vol_MA5']   = vol.rolling(5).mean()
     df['Vol_ratio'] = vol / df['Vol_MA5']
@@ -528,22 +537,15 @@ def exit_signals(df, buy_price):
     daily_change = (close - prev['Close']) / prev['Close'] * 100
     profit_pct   = (close - buy_price) / buy_price * 100
 
-    # ── ATR 移動停損（依獲利狀況分段）────────────────────────
-    # 虧損或小獲利（< 10%）：用買入價計算，保護本金
-    # 中等獲利（10~20%）：移至成本以上，至少保住 40% 獲利
-    # 大幅獲利（> 20%）：用當前價計算 trailing stop，鎖住利潤
-    if profit_pct >= 20:
-        atr_stop = close - 2 * atr          # trailing：跟著現價走
-        stop_label = f"移動停損（現價-2ATR）"
-    elif profit_pct >= 10:
-        atr_stop = buy_price + (close - buy_price) * 0.4   # 保住 40% 獲利
-        stop_label = f"保利停損（鎖住 40% 獲利）"
-    else:
-        atr_stop = buy_price - 2 * atr      # 原始停損，保護本金
-        stop_label = f"初始停損"
+    # ── 吊燈出場（Chandelier Exit 2x ATR）────────────────────────────────────
+    # 用近22日最高收盤往下扣 2×ATR，不受買入成本與歷史舊高影響
+    # 解決「分批進場無法界定峰值起點」與「舊高點造成停損線虛高」的問題
+    high22   = r['High22']
+    atr_stop = high22 - 2 * atr
+    stop_label = f"吊燈停損（22日高{high22:.1f}-2ATR）"
 
     if close < atr_stop:
-        msgs.append(f"  🔴 跌破 ATR {stop_label} {atr_stop:.1f}  → 建議出場")
+        msgs.append(f"  🔴 跌破 {stop_label} {atr_stop:.1f}  → 建議出場")
 
     # ── 單日跳空 ──────────────────────────────────────────
     if daily_change < -4:
@@ -1570,13 +1572,9 @@ def intraday_scan():
         deviation = (price - ma5) / ma5 * 100
         rsi       = r["RSI"]
         atr       = r["ATR"]
-        # ATR 停損線：依獲利分三段（與 exit_signals 邏輯一致）
-        if profit_pct >= 20:
-            atr_stop = price - 2 * atr
-        elif profit_pct >= 10:
-            atr_stop = buy_price + (price - buy_price) * 0.4
-        else:
-            atr_stop = buy_price - 2 * atr
+        # 吊燈出場（Chandelier Exit 2x ATR，與 exit_signals 邏輯一致）
+        high22   = max(float(r['High22']), price)
+        atr_stop = high22 - 2 * atr
 
         # 內外盤解讀
         if ask_pct is not None:
