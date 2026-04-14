@@ -760,9 +760,13 @@ def entry_signals(df):
     else:
         msgs.append(f"  ✗ 量比 = {vr:.2f}  成交過度低迷（需 ≥ 0.5）")
 
-    if above_ma5 <= 5:
+    if -2.0 <= above_ma5 <= 5.0 and day_chg >= -3.0:
         score += 1
-        msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，靠近支撐位")
+        msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，靠近支撐位（今日 {day_chg:+.1f}%）")
+    elif above_ma5 < -2.0:
+        msgs.append(f"  ✗ 現價跌破 MA5 {above_ma5:.1f}%，支撐已失守（需 > -2%）")
+    elif day_chg < -3.0:
+        msgs.append(f"  ✗ 今日跌幅 {day_chg:.1f}%，抓飛刀風險高（需 > -3%）")
     else:
         msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，等回調至 MA5 附近（需 ≤ 5%）")
         # 提示路徑B還差多少
