@@ -680,15 +680,17 @@ def building_signals(df):
     else:
         msgs.append(f"  ✗ 量比 {vol_ratio:.2f}，量能過度萎縮")
 
-    # 條件4：現價不超過 MA5 的 5%（回調加碼，不追高）
+    # 條件4：現價在 MA5 ±5% 內（回調加碼，不追高，也不追跌）
     close     = r['Close']
     ma5       = r['MA5']
     above_ma5 = (close - ma5) / ma5 * 100
-    if above_ma5 <= 5:
+    if -5 <= above_ma5 <= 5:
         score += 1
         msgs.append(f"  ✓ 現價距 MA5 {above_ma5:+.1f}%，位置合理")
-    else:
-        msgs.append(f"  ✗ 現價已高於 MA5 {above_ma5:.1f}%，追高風險高")
+    elif above_ma5 > 5:
+        msgs.append(f"  ✗ 現價高於 MA5 {above_ma5:.1f}%，追高風險高")
+    else:  # above_ma5 < -5，已明顯跌破 MA5
+        msgs.append(f"  ✗ 現價已跌破 MA5 {above_ma5:.1f}%，趨勢轉弱不宜追跌加碼")
 
     return score, msgs, score >= 4
 
@@ -897,6 +899,10 @@ def run():
         stale_note = f"  ⚠ yfinance 尚未更新（昨收 {yf_close:.1f}）" if close != yf_close else ""
         print(f"  現價 {close:.1f}　買入 {buy_price:.1f}　損益 {profit_pct:+.1f}%{stale_note}")
 
+        # 漲停偵測（台股 +10%）
+        daily_chg_r  = (close - df.iloc[-2]['Close']) / df.iloc[-2]['Close'] * 100
+        is_limit_up_r = daily_chg_r >= 9.5
+
         msgs = exit_signals(df, buy_price)
         if msgs:
             for m in msgs:
@@ -910,8 +916,18 @@ def run():
                 )
                 if ticker.endswith('.TW'):   # 三大法人資料僅台股適用
                     _print_institutional(ticker.replace('.TW', ''))
+            elif has_green and is_limit_up_r:
+                # 漲停收盤：停利訊號暫緩，提示明日策略
+                trim_shares = int(h['shares'] * 0.3)
+                atr_r = df.iloc[-1]['ATR']
+                print(f"  🚀 今日漲停收盤（{daily_chg_r:+.1f}%），停利訊號暫緩")
+                print(f"  💡 明日開盤策略：")
+                print(f"     高開 3% 以上 → 減碼 {trim_shares} 股鎖利")
+                print(f"     平開 / 低開  → 持有，移動停損設於 {close - 2*atr_r:.1f}（現價-2ATR）")
+                summary_watch.append(
+                    f"{ticker} {name}（{profit_pct:+.1f}%）漲停 🚀 明日高開3%↑減碼，否則續抱"
+                )
             elif has_green:
-                green_msg  = next(m for m in msgs if '🟢' in m)
                 trim_shares = int(h['shares'] * 0.3)
                 summary_profit.append(
                     f"{ticker} {name}（{profit_pct:+.1f}%）現價 {close:.1f} → 減碼 ~{trim_shares} 股"
@@ -979,6 +995,24 @@ def run():
         for ticker, label in building_list:
             df = data_cache.get(ticker)
             if df is None:
+                continue
+
+            # 出場優先：有 🔴 停損/雙破均線訊號時，跳過建倉加碼
+            buy_price_chk = HOLDINGS[ticker]['buy_price']
+            exit_chk = exit_signals(df, buy_price_chk)
+            if any('🔴' in m for m in exit_chk):
+                close_chk  = df.iloc[-1]['Close']
+                name_chk   = HOLDINGS[ticker].get('name', ticker)
+                profit_chk = (close_chk - buy_price_chk) / buy_price_chk * 100
+                print(f"  ⛔ {ticker} {name_chk}（{label}）  現價 {close_chk:.1f}"
+                      f"  損益 {profit_chk:+.1f}%  ← 出場警示中，暫停加碼")
+                for m in exit_chk:
+                    if '🔴' in m:
+                        print(m)
+                print()
+                summary_building.append(
+                    f"{ticker} {name_chk} ⛔ 出場警示中，暫停加碼（請優先處理減碼）"
+                )
                 continue
 
             score, msgs, ready = building_signals(df)
@@ -1583,11 +1617,38 @@ def intraday_scan():
         has_green  = any("🟢" in m for m in exit_msgs)
         has_yellow = any("🟡" in m for m in exit_msgs)
 
+        # 漲停偵測（台股 ±10%）
+        prev_close_s = df.iloc[-2]['Close']
+        day_chg_s    = (price - prev_close_s) / prev_close_s * 100
+        is_limit_up  = day_chg_s >= 9.5
+
         if price < atr_stop:
             action = f"🔴 {name} 跌破停損線 {atr_stop:.1f}，收盤前考慮出場"
             actions_urgent.append(action)
             print(f"  ⚠  跌破 ATR 停損線 {atr_stop:.1f}")
             for m in exit_msgs: print(m)
+        elif has_red:
+            # 跌破雙均線等強力出場訊號（ATR 未觸發但趨勢已轉弱）
+            for m in exit_msgs: print(m)
+            trim = int(shares * 0.3)
+            if h.get("building"):
+                action = f"🔴 {name} 跌破雙均線（建倉中）→ 暫停加碼，考慮減碼 {trim} 股"
+                print(f"  ⛔ 建倉中但已跌破雙均線，暫停加碼，建議減碼約 {trim} 股")
+            else:
+                action = f"🔴 {name} 跌破雙均線，趨勢轉弱，考慮減碼 {trim} 股"
+                print(f"  ⛔ 趨勢轉弱，建議考慮減碼約 {trim} 股")
+            actions_urgent.append(action)
+        elif is_limit_up and has_green:
+            # 漲停板：停利訊號暫緩，強勢持有
+            trim = int(shares * 0.3)
+            print(f"  🚀 漲停板（{day_chg_s:+.1f}%）強勢！技術面偏熱但漲停代表買盤積極")
+            for m in exit_msgs: print(m)
+            print(f"  ⏸  停利訊號暫緩：漲停板當日不追賣，高機率明日仍強")
+            print(f"  💡 明日策略：")
+            print(f"     開盤高開 3% 以上 → 可減碼 {trim} 股（{int(trim*price):,} 元）鎖利")
+            print(f"     開盤平開或低開   → 持有觀察，設移動停損（現價 - 2ATR = {price - 2*atr:.1f}）")
+            action = f"🚀 {name} 漲停強勢，停利暫緩，明日視開盤再決定"
+            actions_watch.append(action)
         elif has_green:
             trim = int(shares * 0.3)
             for m in exit_msgs: print(m)
