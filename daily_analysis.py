@@ -1633,19 +1633,6 @@ def intraday_scan():
             actions_urgent.append(action)
             print(f"  ⚠  跌破 ATR 停損線 {atr_stop:.1f}")
             for m in exit_msgs: print(m)
-        elif was_limit_up_yest and not is_limit_up and day_chg_s < 3.0:
-            # 漲停次日：昨天漲停但今日未延續強勢，觀察買盤是否退潮
-            trim = int(shares * 0.3)
-            print(f"  🟠 漲停次日（昨 {prev_day_chg_s:+.1f}%），今未延續（{day_chg_s:+.1f}%）")
-            if ask_pct is not None and ask_pct <= 40:
-                action = f"🟠 {name} 漲停次日＋內盤偏重，買盤退潮，建議減碼 {trim} 股（{price:.1f}）"
-                actions_urgent.append(action)
-                print(f"  ⚠  內盤偏重（外盤 {ask_pct:.0f}%），建議減碼約 {trim} 股")
-            else:
-                ob_str = f"{ask_pct:.0f}%" if ask_pct is not None else "N/A"
-                action = f"🟡 {name} 漲停次日未延續，外盤 {ob_str}，留意是否減碼"
-                actions_watch.append(action)
-                print(f"  👀 外盤 {ob_str} 尚可，繼續觀察，若轉內盤則減碼")
         elif has_red:
             # 跌破雙均線等強力出場訊號（ATR 未觸發但趨勢已轉弱）
             for m in exit_msgs: print(m)
@@ -1688,6 +1675,20 @@ def intraday_scan():
             else:
                 print(f"  🟡 偏熱但外盤尚可，繼續觀察")
                 actions_ok.append(f"{name} 偏熱觀察中")
+        elif was_limit_up_yest and not is_limit_up and day_chg_s < 3.0:
+            # 漲停次日：無更強訊號時才跑，觀察買盤是否退潮
+            # 優先順序：ATR停損 > 破線 > 漲停當天 > 停利 > 偏熱 > 漲停次日
+            trim = int(shares * 0.3)
+            print(f"  🟠 漲停次日（昨 {prev_day_chg_s:+.1f}%），今未延續（{day_chg_s:+.1f}%）")
+            if ask_pct is not None and ask_pct <= 40:
+                action = f"🟠 {name} 漲停次日＋內盤偏重，買盤退潮，建議減碼 {trim} 股（{price:.1f}）"
+                actions_urgent.append(action)
+                print(f"  ⚠  內盤偏重（外盤 {ask_pct:.0f}%），建議減碼約 {trim} 股")
+            else:
+                ob_str = f"{ask_pct:.0f}%" if ask_pct is not None else "N/A"
+                action = f"🟡 {name} 漲停次日未延續，外盤 {ob_str}，留意是否減碼"
+                actions_watch.append(action)
+                print(f"  👀 外盤 {ob_str} 尚可，繼續觀察，若轉內盤則減碼")
         elif h.get("avg_down"):
             score, s_msgs, ready = avg_down_signals(df)
             for m in s_msgs: print(m)           # ← 顯示各條件 ✓/✗
