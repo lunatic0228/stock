@@ -1620,15 +1620,32 @@ def intraday_scan():
         has_yellow = any("🟡" in m for m in exit_msgs)
 
         # 漲停偵測（台股 ±10%）
-        prev_close_s = df.iloc[-2]['Close']
-        day_chg_s    = (price - prev_close_s) / prev_close_s * 100
-        is_limit_up  = day_chg_s >= 9.5
+        prev_close_s  = df.iloc[-2]['Close']
+        day_chg_s     = (price - prev_close_s) / prev_close_s * 100
+        is_limit_up   = day_chg_s >= 9.5
+        # 昨日是否漲停（用於次日買盤退潮偵測）
+        prev2_close_s      = df.iloc[-3]['Close'] if len(df) >= 3 else prev_close_s
+        prev_day_chg_s     = (prev_close_s - prev2_close_s) / prev2_close_s * 100
+        was_limit_up_yest  = prev_day_chg_s >= 9.5
 
         if price < atr_stop:
             action = f"🔴 {name} 跌破停損線 {atr_stop:.1f}，收盤前考慮出場"
             actions_urgent.append(action)
             print(f"  ⚠  跌破 ATR 停損線 {atr_stop:.1f}")
             for m in exit_msgs: print(m)
+        elif was_limit_up_yest and not is_limit_up and day_chg_s < 3.0:
+            # 漲停次日：昨天漲停但今日未延續強勢，觀察買盤是否退潮
+            trim = int(shares * 0.3)
+            print(f"  🟠 漲停次日（昨 {prev_day_chg_s:+.1f}%），今未延續（{day_chg_s:+.1f}%）")
+            if ask_pct is not None and ask_pct <= 40:
+                action = f"🟠 {name} 漲停次日＋內盤偏重，買盤退潮，建議減碼 {trim} 股（{price:.1f}）"
+                actions_urgent.append(action)
+                print(f"  ⚠  內盤偏重（外盤 {ask_pct:.0f}%），建議減碼約 {trim} 股")
+            else:
+                ob_str = f"{ask_pct:.0f}%" if ask_pct is not None else "N/A"
+                action = f"🟡 {name} 漲停次日未延續，外盤 {ob_str}，留意是否減碼"
+                actions_watch.append(action)
+                print(f"  👀 外盤 {ob_str} 尚可，繼續觀察，若轉內盤則減碼")
         elif has_red:
             # 跌破雙均線等強力出場訊號（ATR 未觸發但趨勢已轉弱）
             for m in exit_msgs: print(m)
