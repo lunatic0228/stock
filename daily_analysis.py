@@ -1565,6 +1565,9 @@ def intraday_scan():
         df = fetch(ticker)
         if df is None:
             continue
+        # 覆蓋前先保存最後一筆原始收盤與日期（用於漲停次日日期判斷）
+        orig_last_close = float(df.iloc[-1]['Close'])
+        last_df_date    = df.index[-1].date()
         # 盤中：MA5/MA10 不重算；盤前/盤後：重算以取得準確均線值
         df = _apply_fugle_price(df, price, is_intraday=(status == "盤中"))
         r  = df.iloc[-1]
@@ -1620,13 +1623,26 @@ def intraday_scan():
         has_yellow = any("🟡" in m for m in exit_msgs)
 
         # 漲停偵測（台股 ±10%）
-        prev_close_s  = df.iloc[-2]['Close']
-        day_chg_s     = (price - prev_close_s) / prev_close_s * 100
-        is_limit_up   = day_chg_s >= 9.5
-        # 昨日是否漲停（用於次日買盤退潮偵測）
-        prev2_close_s      = df.iloc[-3]['Close'] if len(df) >= 3 else prev_close_s
-        prev_day_chg_s     = (prev_close_s - prev2_close_s) / prev2_close_s * 100
-        was_limit_up_yest  = prev_day_chg_s >= 9.5
+        # yfinance 對台股有 0~1 日延遲：若今日資料尚未入庫，
+        # df.iloc[-1] 為昨日 row（Close 已被 Fugle 現價覆蓋），df.iloc[-2] 為前日
+        # 需根據實際日期判斷，避免「漲停次日」偵測錯位
+        today_date    = now_tw().date()
+        yf_has_today  = (last_df_date >= today_date)
+
+        if yf_has_today:
+            # df[-1]=今日, df[-2]=昨日實際收盤, df[-3]=前日
+            yest_close  = float(df.iloc[-2]['Close'])
+            prev2_close = float(df.iloc[-3]['Close']) if len(df) >= 3 else yest_close
+        else:
+            # df[-1]=昨日（Close 已被 Fugle 覆蓋），需用覆蓋前的原始值
+            yest_close  = orig_last_close
+            prev2_close = float(df.iloc[-2]['Close'])
+
+        prev_close_s      = yest_close
+        day_chg_s         = (price - yest_close) / yest_close * 100
+        is_limit_up       = day_chg_s >= 9.5
+        prev_day_chg_s    = (yest_close - prev2_close) / prev2_close * 100
+        was_limit_up_yest = prev_day_chg_s >= 9.5
 
         if price < atr_stop:
             action = f"🔴 {name} 跌破停損線 {atr_stop:.1f}，收盤前考慮出場"
