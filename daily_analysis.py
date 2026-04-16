@@ -829,19 +829,6 @@ def run():
             all_tickers.append((ticker, label))
             seen.add(ticker)
 
-    for code in WATCHLIST.get("tw", []):
-        # 先試上市(.TW)，抓不到再試上櫃(.TWO)，silent=True 避免印出 404 雜訊
-        ticker = code + ".TW"
-        if fetch(ticker, silent=True) is None:
-            ticker = code + ".TWO"
-        if ticker not in seen:
-            all_tickers.append((ticker, "台股"))
-            seen.add(ticker)
-    for code in WATCHLIST.get("us", []):
-        if code not in seen:
-            all_tickers.append((code, "美股"))
-            seen.add(code)
-
     # 預先抓好所有資料（避免重複下載）
     data_cache  = {}
     fund_cache  = {}
@@ -1074,76 +1061,6 @@ def run():
             print()
 
     divider()
-
-    # ── 新標的進場機會 ──────────────────────────────────
-    print("\n▌ 明日進場機會（觀察名單，四項條件全達成）\n")
-    candidates  = []   # 4/4 全達成
-    vol_breaks  = []   # 3/4 + 量比≥1.5 量能突破
-    watching    = []   # ≤2/4 一般觀察 / 漲跌停
-
-    for ticker, label in all_tickers:
-        if ticker in HOLDINGS:
-            continue
-        df = data_cache.get(ticker)
-        if df is None:
-            continue
-
-        score, msgs = entry_signals(df)
-        close     = fugle_price_cache.get(ticker, df.iloc[-1]['Close'])
-        prev_c    = df.iloc[-2]['Close']
-        day_chg   = (close - prev_c) / prev_c * 100
-
-        # 漲停過濾：台股漲幅接近 ±10%，漲停不追、跌停不抄
-        if day_chg >= 9.5:
-            watching.append((ticker, label, msgs, close, "漲停", 0))
-            continue
-        if day_chg <= -9.5:
-            watching.append((ticker, label, msgs, close, "跌停", 0))
-            continue
-
-        if score == 4:
-            candidates.append((ticker, label, msgs, close, f"{day_chg:+.1f}%"))
-        elif score == 3:
-            vol_r = df.iloc[-1]['Vol_ratio']
-            if vol_r >= 1.5:
-                vol_breaks.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", vol_r))
-            else:
-                watching.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", vol_r))
-        elif score == 2:
-            watching.append((ticker, label, msgs, close, f"{day_chg:+.1f}%", 0))
-
-    if candidates:
-        for ticker, label, msgs, close, chg in candidates:
-            print(f"  ⭐ {ticker}（{label}）　現價 {close:.1f}（{chg}）")
-            for m in msgs:
-                print(m)
-            print()
-            summary_entry.append(f"{ticker} 四項條件全達成，可考慮進場")
-    else:
-        print("  今日無符合全部四項條件的標的\n")
-
-    if vol_breaks:
-        print("  💡 量能突破機會（3/4 條件 + 量比 ≥ 1.5，可小量試單）：")
-        for ticker, label, msgs, close, chg, vol_r in vol_breaks:
-            print(f"  💡 {ticker}（{label}）　現價 {close:.1f}（{chg}）量比 {vol_r:.2f}")
-            for m in msgs:
-                print(m)
-            print()
-            summary_entry.append(f"{ticker} 量能突破試單機會（3/4 + 量比 {vol_r:.2f}）")
-
-    if watching:
-        print("  距進場不遠（2/3 條件）或今日特殊狀況：")
-        for item in watching:
-            ticker, label, msgs, close, note, *_ = item
-            if note == "漲停":
-                print(f"  📈 {ticker}（{label}）　現價 {close:.1f}  漲停中，明日開盤再評估")
-            elif note == "跌停":
-                print(f"  📉 {ticker}（{label}）　現價 {close:.1f}  跌停中，等穩定後再觀察")
-            else:
-                print(f"  🔍 {ticker}（{label}）　現價 {close:.1f}（{note}）")
-                for m in msgs:
-                    print(m)
-            print()
 
     # ── 明日重點摘要 ──────────────────────────────────────
     divider()
@@ -1792,85 +1709,6 @@ def intraday_scan():
             for m in msgs_a:
                 print(m)
             print()
-
-    # ── 觀察名單 量能突破掃描 ──────────────────────────────
-    divider()
-    print("\n▌ 觀察名單 量能突破掃描\n")
-    watch_found = False
-    for code in WATCHLIST.get("tw", []):
-        # .TW / .TWO 自動偵測
-        ticker_w = code + ".TW"
-        df_w = fetch(ticker_w, silent=True)
-        if df_w is None:
-            ticker_w = code + ".TWO"
-            df_w = fetch(ticker_w, silent=True)
-        if df_w is None:
-            continue
-
-        fugle_dw = get_fugle_quote(code)
-        fq_w     = parse_fugle_price(fugle_dw)
-        if not fq_w or not fq_w["price"]:
-            continue
-
-        price_w   = fq_w["price"]
-        ask_pct_w = fq_w.get("ask_pct")
-        vol_w     = fq_w.get("volume") or 0
-
-        # 盤中：MA5/MA10 不重算；盤前/盤後：重算以取得準確均線值
-        df_w       = _apply_fugle_price(df_w, price_w, is_intraday=(status == "盤中"))
-        rw         = df_w.iloc[-1]
-        vol_ma5_w  = rw["Vol_MA5"]
-        # 按當下時間動態推估全日量，盤後直接用實際收盤量
-        if status == "盤中" and vol_w:
-            total_min   = 270
-            elapsed_min = max(1, (now.hour * 60 + now.minute) - 9 * 60)
-            progress    = min(elapsed_min / total_min, 1.0)
-            est_vol_w   = vol_w / progress
-        else:
-            est_vol_w = vol_w
-        # Fugle volume 是張，Vol_MA5 是股（×1000 換算）
-        est_ratio_w = (est_vol_w * 1000) / vol_ma5_w if vol_ma5_w else 0
-
-        prev_cw   = df_w.iloc[-2]['Close']
-        day_chg_w = (price_w - prev_cw) / prev_cw * 100
-
-        if day_chg_w >= 9.5:   # 漲停不追
-            continue
-
-        # 把 Fugle 計算的 est_ratio_w 寫回 df，確保 entry_signals 用的量比一致
-        if vol_ma5_w and vol_ma5_w > 0:
-            df_w = df_w.copy()
-            df_w.iloc[-1, df_w.columns.get_loc('Vol_ratio')] = est_ratio_w
-
-        score_w, msgs_w = entry_signals(df_w)
-
-        # 量能突破：預估全日量比 ≥ 1.5 且外盤 ≥ 50%（無資料也算）
-        is_vol_brk = est_ratio_w >= 1.5 and (ask_pct_w is None or ask_pct_w >= 50)
-
-        if is_vol_brk or score_w >= 3:
-            watch_found = True
-            ob_w  = f"外盤{ask_pct_w:.0f}%" if ask_pct_w is not None else "外盤N/A"
-            vol_m = f"💡量比{est_ratio_w:.2f}" if est_ratio_w >= 1.5 else f"量比{est_ratio_w:.2f}"
-            print(f"  {ticker_w}  現價 {price_w:.1f}（{day_chg_w:+.1f}%）  {ob_w}  {vol_m}  訊號 {score_w}/4")
-            for m in msgs_w:          # ← 顯示各條件 ✓/✗
-                print(m)
-            if score_w == 4:
-                action_w = f"⭐ {ticker_w} 四項全達成，可考慮進場"
-                actions_watch.append(action_w)
-                print(f"     ← 四項條件全達成，可考慮進場")
-            elif is_vol_brk and score_w >= 3:
-                action_w = f"💡 {ticker_w} 量能突破+技術{score_w}/4，可小量試單"
-                actions_watch.append(action_w)
-                print(f"     ← 量能突破 + {score_w}/4 訊號，可考慮小量試單")
-            elif is_vol_brk:
-                print(f"     量能突破但技術訊號弱（{score_w}/4），謹慎觀察")
-                actions_ok.append(f"{ticker_w} 量能突破但訊號弱")
-            else:
-                print(f"     技術訊號 {score_w}/4，量能待加強")
-            print()
-
-    if not watch_found:
-        print("  今日觀察名單無量能突破或接近進場的標的\n")
 
     # ── 操作清單 ──
     divider()
