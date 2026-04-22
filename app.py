@@ -120,9 +120,10 @@ with tab_analysis:
         mode = st.radio(
             "選擇功能",
             ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢",
-             "🕵 大股東增持掃描"],
+             "🤖 機械訊號", "📡 V2盤中分析", "🕵 大股東增持掃描"],
             label_visibility="collapsed",
-            captions=["", "", "", "", "🔬 進階工具"],
+            captions=["", "", "", "", "v2規則，非黑即白",
+                      "策略C+A，詳細進出場說明", "🔬 進階工具"],
         )
 
         # 依選項顯示對應參數
@@ -189,7 +190,7 @@ with tab_analysis:
 
     elif not run_btn:
         st.info("👈 左側選擇功能後點擊「執行」")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             st.markdown("### 📊 盤後分析")
             st.write("收盤後執行，持倉警示、攤平／加碼訊號。")
@@ -202,6 +203,9 @@ with tab_analysis:
         with c4:
             st.markdown("### ⚡ 快速查詢")
             st.write("輸入股票代號，即時技術指標與進出場訊號。")
+        with c5:
+            st.markdown("### 🤖 機械訊號")
+            st.write("v2規則嚴格判斷，進場/出場/減碼，非黑即白。")
 
     else:  # run_btn，一般功能
         _inject_holdings()
@@ -217,6 +221,10 @@ with tab_analysis:
                         _da.intraday_scan()
                     elif "觀察名單" in mode:
                         _da.watchlist_scan()
+                    elif "機械訊號" in mode:
+                        _da.mechanical_scan()
+                    elif "V2盤中分析" in mode:
+                        _da.intraday_v2_scan()
                     elif "快速查詢" in mode:
                         if stock_code:
                             _da.quick_lookup(stock_code)
