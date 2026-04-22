@@ -120,10 +120,10 @@ with tab_analysis:
         mode = st.radio(
             "選擇功能",
             ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢",
-             "🤖 機械訊號", "📡 V2盤中分析", "🕵 大股東增持掃描"],
+             "🤖 機械訊號", "📡 V2盤中分析", "🔭 V2觀察名單", "🕵 大股東增持掃描"],
             label_visibility="collapsed",
             captions=["", "", "", "", "v2規則，非黑即白",
-                      "策略C+A，詳細進出場說明", "🔬 進階工具"],
+                      "持倉監控＋虧損複查", "V2策略掃進場機會", "🔬 進階工具"],
         )
 
         # 依選項顯示對應參數
@@ -225,6 +225,8 @@ with tab_analysis:
                         _da.mechanical_scan()
                     elif "V2盤中分析" in mode:
                         _da.intraday_v2_scan()
+                    elif "V2觀察名單" in mode:
+                        _da.watchlist_v2_scan()
                     elif "快速查詢" in mode:
                         if stock_code:
                             _da.quick_lookup(stock_code)

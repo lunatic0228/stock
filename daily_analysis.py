@@ -3247,12 +3247,19 @@ def mechanical_scan():
 
 
 def intraday_v2_scan():
-    """V2 策略盤中分析：策略C（低谷反彈）優先 + 策略A（趨勢跟蹤）
+    """V2 盤中分析 — 持倉監控（不掃觀察名單）
 
-    完整對齊 backtest_v2.py 的進出場邏輯：
-      策略C：close < MA10 + ≥2/3 條件（超跌≥3, 衰竭≥1, 法人/外盤）
-      策略A：ADX≥25 + 20日漲幅≥3% + entry_signals score≥4
-    輸出比機械訊號更完整的進出場說明。
+    聚焦持倉的出場/減碼，以及虧損時重新審查進場條件。
+    觀察名單請用 watchlist_v2_scan()。
+
+    盤中法人替代說明：
+      外資買賣超為 T+1，盤中無法得知當日法人動向。
+      C條件③（法人買超）盤中以「外盤比>55%」替代
+        （主動買盤積極 ≈ 當日有人在買，合理代理）。
+      出場用的「法人連賣≥3日」仍查 API（最新為昨日，仍有效）。
+
+    量能顯示：
+      盤中量依進度推估全日量比（當前量/已過比例）。
     """
     import numpy as np
     from collections import defaultdict
@@ -3268,6 +3275,7 @@ def intraday_v2_scan():
     C_OVERSOLD_MIN  = 3
     C_STOP_PCT      = 0.97
     C_MIN_COND      = 2      # 3 條件至少達到幾個
+    _V2_HOLDINGS_ONLY = True  # 標記：此函數只看持倉
 
     # ── ADX 計算（對齊 backtest_v2）─────────────────────────
     def _calc_adx(df, period=14):
@@ -3393,326 +3401,596 @@ def intraday_v2_scan():
     now    = now_tw()
     status, _ = market_status()
 
-    title = {'盤中': 'V2 策略盤中分析  即時評估',
-             '盤後': 'V2 策略盤後分析  收盤回顧'}.get(status, 'V2 策略盤前分析  昨日資料')
     if status == '盤中':
         remaining = max(0, (13 * 60 + 30) - now.hour * 60 - now.minute)
-        time_note = f"距收盤 {remaining} 分鐘"
+        time_note  = f"距收盤 {remaining} 分鐘"
+        inst_proxy = "盤中：外盤比>55% 替代法人買超（T+1不可用）"
     elif status == '盤後':
-        time_note = "今日最終收盤"
+        time_note  = "今日最終收盤"
+        inst_proxy = "盤後：使用最新法人資料（昨日）"
     else:
-        time_note = "台股尚未開盤"
+        time_note  = "台股尚未開盤"
+        inst_proxy = "盤前：使用最新法人資料（昨日）"
 
     print()
     print("=" * 64)
-    print(f"  🤖 {title}")
-    print(f"  規則：策略C（低谷反彈）優先  ▶  策略A（趨勢跟蹤）次之")
+    print(f"  🤖 V2 盤中分析 — 持倉監控")
+    print(f"  策略C（低谷反彈）優先  ▶  策略A（趨勢跟蹤）次之")
     print(f"  {now.strftime('%Y-%m-%d  %H:%M')}  {time_note}")
+    print(f"  ℹ  {inst_proxy}")
     print("=" * 64)
 
-    exits   = []   # (ticker, name, reason)
-    trims   = []
-    c_hits  = []
-    a_hits  = []
+    exits  = []   # (ticker, name, reason)
+    trims  = []
 
-    holdings  = HOLDINGS
-    watchlist = WATCHLIST
+    holdings = HOLDINGS
+
+    if not holdings:
+        print("\n  （無持倉）")
+        _print_v2_summary(exits, trims)
+        return
+
+    # ── 量能說明（盤中推估全日，盤後用實際）────────────────────
+    def _vol_note(fq_, vol_ma5_val):
+        if not fq_ or not vol_ma5_val:
+            return "量比N/A"
+        vol_raw = fq_.get('volume') or 0
+        if not vol_raw:
+            return "量比N/A"
+        if status == '盤中':
+            elapsed  = max(1, now.hour * 60 + now.minute - 9 * 60)
+            progress = min(elapsed / 270, 1.0)
+            est_vr   = (vol_raw / progress * 1000) / vol_ma5_val
+            tag = "爆量🔥" if est_vr >= 2 else "放量↑" if est_vr >= 1.5 else "縮量↓" if est_vr < 0.8 else "正常"
+            return f"現量{vol_raw}張 預估全日量比{est_vr:.2f}（進度{progress*100:.0f}%，{tag}）"
+        else:
+            vr  = (vol_raw * 1000) / vol_ma5_val
+            tag = "爆量🔥" if vr >= 2 else "放量↑" if vr >= 1.5 else "縮量↓" if vr < 0.8 else "正常"
+            return f"量{vol_raw}張 量比{vr:.2f}（{tag}）"
+
+    # ── 盤後/盤前查法人最新買超（C條件③替代）──────────────────
+    def _inst_buy_recent(code_):
+        start_ = (now_tw() - timedelta(days=10)).strftime('%Y-%m-%d')
+        pp_ = {'dataset': 'TaiwanStockInstitutionalInvestorsBuySell',
+               'data_id': code_, 'start_date': start_}
+        if FINMIND_TOKEN:
+            pp_['token'] = FINMIND_TOKEN
+        try:
+            bd_ = _req.get('https://api.finmindtrade.com/api/v4/data',
+                           params=pp_, timeout=12).json()
+            bd_map = defaultdict(int)
+            for r_ in bd_.get('data', []):
+                if r_.get('name') == 'Foreign_Investor':
+                    bd_map[r_['date']] += ((r_.get('buy') or 0) - (r_.get('sell') or 0)) // 1000
+            if not bd_map:
+                return False, '無法人資料'
+            lat_ = sorted(bd_map.keys())[-1]
+            net_ = bd_map[lat_]
+            ok_  = net_ > 0
+            note = f"外資{lat_[5:]} {'買+' if ok_ else '賣-'}{abs(net_)}張"
+            return ok_, note
+        except Exception:
+            return False, '法人API錯誤'
 
     # ══════════════════════════════════════════════════════════
-    #  持倉：出場 / 減碼判斷
+    #  持倉逐一掃描
     # ══════════════════════════════════════════════════════════
-    if holdings:
+    for ticker, h in holdings.items():
+        if not ticker.endswith(('.TW', '.TWO')):
+            continue
+        code      = ticker.replace('.TW', '').replace('.TWO', '')
+        name      = h.get('name', ticker)
+        buy_price = float(h.get('buy_price', 0))
+        shares    = h.get('shares', 0)
+
+        df, fq = _get_df_v2(ticker)
+        if df is None or len(df) < 10:
+            print(f"\n  {ticker} {name}  ⚠ 無法取得資料")
+            continue
+
+        row        = df.iloc[-1]
+        close      = float(row['Close'])
+        atr        = float(row['ATR'])
+        high22     = float(row['High22'])
+        ma5        = float(row['MA5'])
+        ma10       = float(row['MA10'])
+        rsi        = float(row['RSI'])
+        low20      = float(row['Low_20'])
+        vol_ma5    = float(row['Vol_MA5']) if row['Vol_MA5'] else 0
+        deviation  = (close - ma5) / ma5 * 100
+        profit_pct = (close - buy_price) / buy_price * 100 if buy_price else 0
+        atr_stop   = high22 - CHANDELIER_MULT * atr
+        c_stop     = low20 * C_STOP_PCT
+        below_ma10 = close < ma10
+        below_ma5  = close < ma5
+        in_loss    = profit_pct < 0
+        ask_pct    = fq.get('ask_pct') if fq else None
+
+        # 外盤字串
+        if ask_pct is not None:
+            ob_str = f"外盤{ask_pct:.0f}%（{'偏多↑' if ask_pct >= 55 else '偏空↓' if ask_pct <= 40 else '平衡'}）"
+        else:
+            ob_str = "外盤N/A"
+
+        # 量能字串
+        vol_str = _vol_note(fq, vol_ma5)
+
+        ma10_tag  = "⬇MA10下方" if below_ma10 else "MA10上方"
+        loss_tag  = "  🔻虧損" if in_loss else ""
         print()
-        print("  ── 持倉出場判斷 ─────────────────────────────────────")
+        print(f"  {'─'*60}")
+        print(f"  {ticker} {name}  現價{close:.1f}  損益{profit_pct:+.1f}%{loss_tag}  {ma10_tag}")
+        print(f"  乖離{deviation:+.1f}%  RSI{rsi:.1f}  {ob_str}")
+        print(f"  {vol_str}")
 
-        for ticker, h in holdings.items():
-            if not ticker.endswith(('.TW', '.TWO')):
-                continue
-            code      = ticker.replace('.TW', '').replace('.TWO', '')
-            name      = h.get('name', ticker)
-            buy_price = float(h.get('buy_price', 0))
-            shares    = h.get('shares', 0)
+        # ── 出場/減碼判斷（C優先，虧損且在MA10下方用C規則）────
+        use_c = in_loss and below_ma10
 
-            df, fq = _get_df_v2(ticker)
-            if df is None or len(df) < 10:
-                print(f"\n  {ticker} {name}  ⚠ 無法取得資料")
-                continue
-
-            row        = df.iloc[-1]
-            close      = float(row['Close'])
-            atr        = float(row['ATR'])
-            high22     = float(row['High22'])
-            ma5        = float(row['MA5'])
-            ma10       = float(row['MA10'])
-            rsi        = float(row['RSI'])
-            low20      = float(row['Low_20'])
-            deviation  = (close - ma5) / ma5 * 100
-            profit_pct = (close - buy_price) / buy_price * 100 if buy_price else 0
-            atr_stop   = high22 - CHANDELIER_MULT * atr
-            c_stop     = low20 * C_STOP_PCT
-            below_ma10 = close < ma10
-            below_ma5  = close < ma5
-            ask_pct    = fq.get('ask_pct') if fq else None
-            ob_str     = f"外盤{ask_pct:.0f}%  " if ask_pct is not None else ""
-
-            ma10_tag = "⬇ 在MA10下方" if below_ma10 else "在MA10上方"
-            print(f"\n  {ticker} {name}  現價 {close:.1f}  損益 {profit_pct:+.1f}%  {ma10_tag}")
-            print(f"  乖離 {deviation:+.1f}%  RSI {rsi:.1f}  {ob_str}ATR={atr:.2f}")
-
-            # 策略判斷：虧損且在MA10下方 → 優先用C出場規則（底部回撤）
-            use_c = (profit_pct < 0 and below_ma10)
-
-            if use_c:
-                # ── 策略C 出場邏輯 ────────────────────────────
-                print(f"  📋 出場判斷（策略C 低谷反彈模式，虧損在MA10下方）")
-
-                # ① C停損：近20日低點 × 0.97
-                if close < c_stop:
-                    msg = f"🔴 停損觸發！現價{close:.1f} < 低點{low20:.1f}×0.97={c_stop:.1f}"
-                    print(f"  ├ {msg}")
-                    print(f"  │   → 底部確認失敗，建議立即出場（不要等）")
-                    exits.append((ticker, name, f"C停損({c_stop:.1f})"))
-                else:
-                    dist_s = (close - c_stop) / close * 100
-                    print(f"  ├ 停損線：低點{low20:.1f}×0.97={c_stop:.1f}  未跌破✓  距停損{dist_s:.1f}%")
-
-                # ② MA10 目標
-                if close >= ma10:
-                    print(f"  ├ 🟢 目標達成！收復MA10={ma10:.1f}，底部反彈完成")
-                    print(f"  │   → 可考慮獲利了結，或切換至策略A繼續持有")
-                    trims.append((ticker, name, "C目標達成(收復MA10)"))
-                else:
-                    dist_t = (ma10 - close) / close * 100
-                    print(f"  ├ 目標：收復MA10={ma10:.1f}  → 尚差+{dist_t:.1f}%，繼續等待")
-
-                # ④ 法人連賣（C版：≥3日提前出場）
-                f_sell, f_sell_note = _inst_sell_streak(code)
-                if f_sell >= INST_SELL_DAYS:
-                    print(f"  ├ ⚠ 法人提前出場！{f_sell_note}（≥3日）")
-                    print(f"  │   → 籌碼持續流失，不等目標，建議出場")
-                    exits.append((ticker, name, f"C法人({f_sell_note})"))
-                else:
-                    print(f"  └ 法人：{f_sell_note}  ✓")
-
-                # 補充A吊燈線（輔助確認）
-                print(f"  ── A策略吊燈線（輔助參考）：")
-                if close < atr_stop:
-                    print(f"  ⚠  High22({high22:.1f})-2×ATR({atr:.2f})={atr_stop:.1f}  現價跌破，雙重出場訊號！")
-                else:
-                    print(f"     High22({high22:.1f})-2×ATR({atr:.2f})={atr_stop:.1f}  未跌破✓")
-
+        if use_c:
+            print(f"  📋 出場判斷（策略C — 虧損在MA10下方）")
+            if close < c_stop:
+                print(f"  ├ 🔴 停損觸發！{close:.1f} < 低點{low20:.1f}×0.97={c_stop:.1f}")
+                print(f"  │   底部確認失敗 → 建議立即出場")
+                exits.append((ticker, name, f"C停損({c_stop:.1f})"))
             else:
-                # ── 策略A 出場邏輯（趨勢跟蹤）────────────────────
-                print(f"  📋 出場判斷（策略A 趨勢跟蹤模式）")
+                d_s = (close - c_stop) / close * 100
+                print(f"  ├ 停損線 {c_stop:.1f}（低點{low20:.1f}×0.97）  未跌破✓  距停損{d_s:.1f}%")
 
-                # 減碼判斷（策略A優先序第一位）
-                if deviation > STRONG_DEV and rsi > STRONG_RSI:
-                    trim_shares = int(shares * 0.3)
-                    print(f"  ├ 🟡 強力減碼！乖離{deviation:.1f}%>12% 且 RSI{rsi:.1f}>75")
-                    print(f"  │   → 若已曾減碼：直接出清剩餘")
-                    print(f"  │   → 若首次：減碼30%（{trim_shares}股），保留主倉")
-                    trims.append((ticker, name, f"A強力減碼(乖離{deviation:.1f}% RSI{rsi:.1f})"))
-                elif deviation > TRIM_DEV and rsi > TRIM_RSI:
-                    trim_shares = int(shares * 0.3)
-                    print(f"  ├ 🟡 減碼訊號！乖離{deviation:.1f}%>8% 且 RSI{rsi:.1f}>68")
-                    print(f"  │   → 建議減碼30%（{trim_shares}股），鎖定部分獲利")
-                    print(f"  │   強力減碼門檻：乖離>12%+RSI>75（現尚未達標）")
-                    trims.append((ticker, name, f"A減碼30%(乖離{deviation:.1f}% RSI{rsi:.1f})"))
-                else:
-                    print(f"  ├ 乖離保護：{deviation:+.1f}%  RSI:{rsi:.1f}  未達減碼門檻✓")
+            if close >= ma10:
+                print(f"  ├ 🟢 目標達成！收復MA10={ma10:.1f} → 可獲利了結或轉A策略")
+                trims.append((ticker, name, "C目標達成(收復MA10)"))
+            else:
+                d_t = (ma10 - close) / close * 100
+                print(f"  ├ 目標 MA10={ma10:.1f}  尚差+{d_t:.1f}% → 等待收復")
 
-                # 吊燈線停損（策略A核心停損）
-                if close < atr_stop:
-                    dist_atr = (atr_stop - close) / close * 100
-                    print(f"  ├ 🔴 吊燈線觸發！High22({high22:.1f})-2×ATR({atr:.2f})={atr_stop:.1f}")
-                    print(f"  │   現價{close:.1f}已跌破停損線（跌破{dist_atr:.1f}%）→ 建議出場")
-                    exits.append((ticker, name, f"A吊燈線({atr_stop:.1f})"))
-                else:
-                    dist_atr = (close - atr_stop) / close * 100
-                    print(f"  ├ 吊燈停損：{atr_stop:.1f}  未跌破✓  距停損+{dist_atr:.1f}%")
+            f_sell, f_sell_note = _inst_sell_streak(code)
+            if f_sell >= INST_SELL_DAYS:
+                print(f"  ├ ⚠  法人連賣提前出場！{f_sell_note} → 不等目標，建議出場")
+                exits.append((ticker, name, f"C法人連賣({f_sell_note})"))
+            else:
+                print(f"  └ 法人：{f_sell_note}（T+1）✓")
 
-                # 雙線跌破（趨勢結束）
-                if below_ma5 and below_ma10:
-                    print(f"  ├ 🔴 雙線跌破！MA5({ma5:.1f}) MA10({ma10:.1f})  趨勢已轉弱")
-                    print(f"  │   → 若未觸發吊燈線，可設停損觀察一日確認")
-                    exits.append((ticker, name, "A雙線跌破"))
-                elif below_ma5:
-                    print(f"  ├ ⚠  跌破MA5({ma5:.1f})，但MA10({ma10:.1f})仍支撐，觀察")
-                else:
-                    print(f"  ├ 均線：MA5({ma5:.1f}) MA10({ma10:.1f})  在雙線上方✓")
+            if close < atr_stop:
+                print(f"  ⚠  附加：A吊燈線也跌破 {atr_stop:.1f} → 雙重出場訊號！")
 
-                # 法人連賣
-                f_sell, f_sell_note = _inst_sell_streak(code)
-                if f_sell >= INST_SELL_DAYS:
-                    print(f"  └ ⚠  法人提前出場！{f_sell_note}  籌碼流失，建議出場")
-                    exits.append((ticker, name, f"A法人({f_sell_note})"))
-                else:
-                    print(f"  └ 法人：{f_sell_note}  ✓")
+        else:
+            print(f"  📋 出場判斷（策略A — 趨勢跟蹤模式）")
+            if deviation > STRONG_DEV and rsi > STRONG_RSI:
+                trim_sh = int(shares * 0.3)
+                print(f"  ├ 🟡 強力減碼！乖離{deviation:.1f}%>12% 且 RSI{rsi:.1f}>75")
+                print(f"  │   首次：減碼30%（{trim_sh}股）；已曾減碼：出清剩餘")
+                trims.append((ticker, name, f"A強力減碼(乖離{deviation:.1f}%)"))
+            elif deviation > TRIM_DEV and rsi > TRIM_RSI:
+                trim_sh = int(shares * 0.3)
+                print(f"  ├ 🟡 減碼訊號！乖離{deviation:.1f}%>8% 且 RSI{rsi:.1f}>68")
+                print(f"  │   建議減碼30%（{trim_sh}股）  強力門檻：乖離>12%+RSI>75")
+                trims.append((ticker, name, f"A減碼30%(乖離{deviation:.1f}%)"))
+            else:
+                print(f"  ├ 獲利保護：乖離{deviation:+.1f}% RSI{rsi:.1f} → 未達減碼門檻✓")
 
-    # ══════════════════════════════════════════════════════════
-    #  觀察名單：進場掃描（策略C優先，不觸發才看A）
-    # ══════════════════════════════════════════════════════════
-    all_watch = []
-    for group, tickers in watchlist.items():
-        for t in tickers:
-            if t not in (holdings or {}):
-                all_watch.append(t)
+            if close < atr_stop:
+                d_atr = (atr_stop - close) / close * 100
+                print(f"  ├ 🔴 吊燈線觸發！{atr_stop:.1f}（High22{high22:.1f}-2ATR{atr:.2f}）")
+                print(f"  │   跌破{d_atr:.1f}% → 建議出場")
+                exits.append((ticker, name, f"A吊燈線({atr_stop:.1f})"))
+            else:
+                d_atr = (close - atr_stop) / close * 100
+                print(f"  ├ 吊燈停損 {atr_stop:.1f}  未跌破✓  距停損+{d_atr:.1f}%")
 
-    if all_watch:
-        print()
-        print("  ── 觀察名單進場掃描 ─────────────────────────────────")
-        print("  策略C優先（MA10下方偵測底部）▶ C不觸發才看策略A趨勢")
+            if below_ma5 and below_ma10:
+                print(f"  ├ 🔴 雙線跌破！MA5({ma5:.1f}) MA10({ma10:.1f}) → 趨勢結束")
+                exits.append((ticker, name, "A雙線跌破"))
+            elif below_ma5:
+                print(f"  ├ ⚠  跌破MA5({ma5:.1f})，MA10({ma10:.1f})仍支撐 → 留意")
+            else:
+                print(f"  ├ 均線 MA5({ma5:.1f}) MA10({ma10:.1f})  雙線支撐✓")
 
-        for code in all_watch:
-            ticker = code + ".TW"
-            df, fq = _get_df_v2(ticker)
-            if df is None:
-                ticker = code + ".TWO"
-                df, fq = _get_df_v2(ticker)
-            if df is None or len(df) < 25:
-                print(f"\n  {code}  ⚠ 資料不足，跳過")
-                continue
+            f_sell, f_sell_note = _inst_sell_streak(code)
+            if f_sell >= INST_SELL_DAYS:
+                print(f"  └ ⚠  法人連賣！{f_sell_note} → 建議出場")
+                exits.append((ticker, name, f"A法人連賣({f_sell_note})"))
+            else:
+                print(f"  └ 法人：{f_sell_note}  ✓")
 
-            row        = df.iloc[-1]
-            close      = float(row['Close'])
-            ma10       = float(row['MA10'])
-            ma5        = float(row['MA5'])
-            low20      = float(row['Low_20'])
-            below_ma10 = close < ma10
-            ask_pct    = fq.get('ask_pct') if fq else None
+        # ── 虧損複查：重新審視進場邏輯是否仍成立 ─────────────
+        if in_loss:
+            print()
+            print(f"  🔍 虧損複查 — 進場邏輯是否仍然成立？")
+            print(f"     目的：成立 → 繼續持有等待；破壞 → 評估停損出場")
+            c_ok = False
+            a_ok = False
 
-            ma10_tag = "⬇ MA10下方" if below_ma10 else "MA10上方"
-            print(f"\n  {ticker}  現價{close:.1f}  MA10={ma10:.1f}  ({ma10_tag})")
-
-            c_triggered = False
-
-            # ── 策略C：低谷反彈（必須在MA10下方）────────────────
+            # ── 策略C 複查 ──────────────────────────────────
             if below_ma10:
-                print(f"  【策略C 低谷反彈】前提：{close:.1f} < MA10({ma10:.1f}) ✓")
-
-                # 條件① 超跌評分
+                print(f"  ┌ 策略C（低谷反彈）：現價{close:.1f} < MA10({ma10:.1f}) ✓ 仍在低谷區")
                 try:
-                    o_score, o_detail, o_level = detect_oversold(df)
+                    o_score, o_detail, _ = detect_oversold(df)
                 except Exception:
-                    o_score, o_detail, o_level = 0, [], "?"
-                ok1  = (o_score >= C_OVERSOLD_MIN)
-                m1   = "✓" if ok1 else "✗"
-                print(f"  ① 超跌評分  {m1}  {o_score}/7（需≥3）→ {o_level}")
+                    o_score, o_detail = 0, []
+                ok1 = o_score >= C_OVERSOLD_MIN
+                print(f"  │ ① 超跌評分 {'✓' if ok1 else '✗'} {o_score}/7（需≥3）")
                 for d in o_detail:
-                    print(f"       {d.strip()}")
+                    print(f"  │     {d.strip()}")
 
-                # 條件② 賣壓衰竭
                 try:
                     e_count, e_list = detect_selling_exhaustion(df)
                 except Exception:
                     e_count, e_list = 0, []
-                ok2 = (e_count >= 1)
-                m2  = "✓" if ok2 else "✗"
-                print(f"  ② 賣壓衰竭  {m2}  {e_count}項（需≥1）")
+                ok2 = e_count >= 1
+                print(f"  │ ② 賣壓衰竭 {'✓' if ok2 else '✗'} {e_count}項（需≥1）")
                 for s in e_list:
-                    print(f"       {s}")
+                    print(f"  │     {s}")
 
-                # 條件③ 法人/外盤
                 if status == '盤中' and ask_pct is not None:
-                    ok3     = (ask_pct > 55)
-                    m3      = "✓" if ok3 else "✗"
-                    c3_note = f"外盤比{ask_pct:.0f}%（盤中，需>55%）"
+                    ok3     = ask_pct > 55
+                    c3_note = f"外盤比{ask_pct:.0f}%（>55%替代法人買超）"
                 else:
-                    ok3, c3_note = _inst_buy_latest(code)
-                    m3 = "✓" if ok3 else "✗"
-                    c3_note = f"{c3_note}（盤後/盤前用法人）"
-                print(f"  ③ 法人/外盤 {m3}  {c3_note}")
+                    ok3, c3_note = _inst_buy_recent(code)
+                print(f"  │ ③ 法人/外盤 {'✓' if ok3 else '✗'} {c3_note}")
 
-                c_met  = sum([ok1, ok2, ok3])
-                c_stop = low20 * C_STOP_PCT
-                target = ma10
-                d_stop = (close - c_stop) / close * 100
-                d_tgt  = (target - close) / close * 100
-                rr     = abs(d_tgt / d_stop) if d_stop else 0
-
+                c_met = sum([ok1, ok2, ok3])
                 if c_met >= C_MIN_COND:
-                    met_names = []
-                    if ok1: met_names.append("超跌")
-                    if ok2: met_names.append("衰竭")
-                    if ok3: met_names.append("法人/外盤")
-                    print(f"  → ✅ 策略C進場訊號！{c_met}/3 達成（需≥{C_MIN_COND}）")
-                    print(f"  → 訊號說明：{'+'.join(met_names)} 底部特徵同步出現，低谷反彈機率提升")
-                    print(f"  → 停損：低點{low20:.1f}×0.97={c_stop:.1f}（風險{d_stop:.1f}%，跌破即認錯出場）")
-                    print(f"  → 目標：收復MA10={target:.1f}（潛在+{d_tgt:.1f}%，風險報酬比 1:{rr:.2f}）")
-                    if rr < 1.0:
-                        print(f"     ⚠  報酬比偏低，建議等法人/外盤訊號再確認後進場")
-                    c_hits.append((ticker, code, close, c_met))
-                    c_triggered = True
+                    print(f"  └ ✅ C底部邏輯仍成立（{c_met}/3）→ 底部特徵有效，繼續等待MA10")
+                    c_ok = True
                 elif c_met == C_MIN_COND - 1:
-                    missing = []
-                    if not ok1: missing.append("超跌不足")
-                    if not ok2: missing.append("無衰竭訊號")
-                    if not ok3: missing.append("法人/外盤未確認")
-                    print(f"  → 💡 低谷待確認（{c_met}/3，差1項：{'、'.join(missing)}）")
-                    print(f"  → 尚未達進場標準，持續觀察，勿搶先進場")
+                    print(f"  └ 💡 C底部訊號偏弱（{c_met}/3）→ 持有但若停損線跌破立刻出場")
                 else:
-                    print(f"  → ⏳ 底部特徵不足（{c_met}/3），暫不進場")
+                    print(f"  └ ❌ C底部條件不足（{c_met}/3）→ 底部訊號消失")
+            else:
+                print(f"  ┌ 策略C：現價{close:.1f} ≥ MA10({ma10:.1f})，不在低谷區 → 跳過")
 
-            # ── 策略A：趨勢跟蹤（C不觸發才判斷）────────────────
-            if not c_triggered:
-                if below_ma10:
-                    print(f"  【策略A 趨勢跟蹤】（C未觸發，補充趨勢掃描）")
+            # ── 策略A 複查 ──────────────────────────────────
+            print(f"  ┌ 策略A（趨勢跟蹤）重新審查：")
+            adx_r   = _calc_adx(df)
+            c20_ago = float(df['Close'].iloc[-21]) if len(df) >= 21 else close
+            roc_r   = (close - c20_ago) / c20_ago * 100
+            adx_ok  = adx_r >= ADX_TREND
+            roc_ok  = roc_r >= ROC_20_MIN
+            print(f"  │ ADX={adx_r:.1f}  {'✓' if adx_ok else '✗'}（需≥25）  "
+                  f"20日漲幅={roc_r:+.1f}%  {'✓' if roc_ok else '✗'}（需≥3%）")
+            if adx_ok and roc_ok:
+                try:
+                    sc_, _ = entry_signals(df)
+                except Exception:
+                    sc_ = 0
+                if sc_ >= 4:
+                    print(f"  │ 進場條件 score={sc_}/4 ✓")
+                    print(f"  └ ✅ A趨勢邏輯仍成立 → 趨勢完好，可能只是正常回調")
+                    a_ok = True
                 else:
-                    print(f"  【策略A 趨勢跟蹤】")
+                    print(f"  │ 進場條件 score={sc_}/4（需≥4）✗")
+                    print(f"  └ ❌ A進場條件已失效（score不足）")
+            else:
+                parts = []
+                if not adx_ok: parts.append("趨勢已弱(ADX不足)")
+                if not roc_ok: parts.append("近期漲幅不足")
+                print(f"  └ ❌ A前提破壞：{' / '.join(parts)}")
 
-                adx     = _calc_adx(df)
-                c20_ago = float(df['Close'].iloc[-21]) if len(df) >= 21 else close
-                roc_20d = (close - c20_ago) / c20_ago * 100
-                adx_ok  = (adx >= ADX_TREND)
-                roc_ok  = (roc_20d >= ROC_20_MIN)
-                adx_m   = "✓" if adx_ok else "✗"
-                roc_m   = "✓" if roc_ok else "✗"
-                print(f"  前提① ADX={adx:.1f}  {adx_m}（需≥25，{'趨勢確認' if adx_ok else '趨勢不足'}）")
-                print(f"  前提② 20日漲幅={roc_20d:+.1f}%  {roc_m}（需≥3%，{'非橫盤' if roc_ok else '近期上漲不足'}）")
+            # ── 裁決 ────────────────────────────────────────
+            print()
+            if c_ok or a_ok:
+                which = ("C底部" if c_ok else "") + ("＋A趨勢" if a_ok else "")
+                print(f"  💡 裁決：進場邏輯仍有效（{which.lstrip('＋')}）→ 建議繼續持有")
+                print(f"     停損參考：C={c_stop:.1f} / A吊燈={atr_stop:.1f}")
+            else:
+                print(f"  ⚠  裁決：C底部與A趨勢邏輯均已失效")
+                print(f"     → 建議評估認損出場，避免虧損擴大")
 
-                if adx_ok and roc_ok:
-                    try:
-                        score, score_msgs = entry_signals(df)
-                    except Exception:
-                        score, score_msgs = 0, []
-                    for msg in score_msgs:
-                        print(f"  {msg}")
-                    if score >= 4:
-                        print(f"  → ✅ 策略A進場訊號！ADX={adx:.0f} + 20日+{roc_20d:.1f}% + score={score}")
-                        print(f"  → 訊號說明：趨勢強勁（ADX≥25）且近20日真實上漲，進場條件全達標")
-                        a_hits.append((ticker, code, close, adx, roc_20d, score))
-                    else:
-                        print(f"  → ─ 策略A 暫不進場（score={score}/4，需≥4）")
-                else:
-                    reasons = []
-                    if not adx_ok: reasons.append(f"ADX={adx:.0f} 趨勢不夠強")
-                    if not roc_ok: reasons.append(f"20日漲幅{roc_20d:.1f}% 上漲動能不足")
-                    print(f"  → ─ 前提未達：{' / '.join(reasons)}")
+    # ── 持倉總結 ─────────────────────────────────────────────
+    _print_v2_summary(exits, trims)
 
-    # ══════════════════════════════════════════════════════════
-    #  總結
-    # ══════════════════════════════════════════════════════════
+
+def _print_v2_summary(exits, trims):
+    """V2 訊號總結輸出（持倉用）"""
     print()
     print("=" * 64)
-    print("  📊 V2 訊號總結")
+    print("  📊 V2 持倉訊號總結")
     if exits:
         print(f"  🔴 出場訊號（{len(exits)} 支）：")
         for t, n, r in exits:
             print(f"      {t} {n}  ← {r}")
     if trims:
-        print(f"  🟡 減碼訊號（{len(trims)} 支）：")
+        print(f"  🟡 減碼/目標（{len(trims)} 支）：")
         for t, n, r in trims:
             print(f"      {t} {n}  ← {r}")
+    if not exits and not trims:
+        print("  今日無出場/減碼訊號，持倉繼續持有")
+    print("=" * 64)
+    print()
+
+
+def watchlist_v2_scan():
+    """V2 觀察名單掃描 — 策略C（低谷反彈）優先，策略A（趨勢跟蹤）次之
+
+    只掃觀察名單，不看持倉。
+    盤中：外盤比>55% 替代法人買超（C條件③）。
+    """
+    import numpy as np
+    from collections import defaultdict
+    import requests as _req
+
+    CHANDELIER_MULT = 2.0
+    ADX_TREND       = 25
+    ROC_20_MIN      = 3.0
+    C_OVERSOLD_MIN  = 3
+    C_STOP_PCT      = 0.97
+    C_MIN_COND      = 2
+
+    def _calc_adx(df, period=14):
+        high, low, close = df['High'], df['Low'], df['Close']
+        pdm = high.diff()
+        mdm = -low.diff()
+        pdm = pdm.where((pdm > mdm) & (pdm > 0), 0.0)
+        mdm = mdm.where((mdm > pdm) & (mdm > 0), 0.0)
+        tr  = pd.concat([high-low, (high-close.shift()).abs(),
+                         (low-close.shift()).abs()], axis=1).max(axis=1)
+        a   = 1 / period
+        atr = tr.ewm(alpha=a, adjust=False).mean()
+        pdi = 100 * pdm.ewm(alpha=a, adjust=False).mean() / atr
+        mdi = 100 * mdm.ewm(alpha=a, adjust=False).mean() / atr
+        dx  = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+        adx = dx.ewm(alpha=a, adjust=False).mean()
+        return float(adx.iloc[-1]) if not adx.empty else 0.0
+
+    def _inst_buy_latest(code_):
+        start_ = (now_tw() - timedelta(days=10)).strftime('%Y-%m-%d')
+        pp_ = {'dataset': 'TaiwanStockInstitutionalInvestorsBuySell',
+               'data_id': code_, 'start_date': start_}
+        if FINMIND_TOKEN:
+            pp_['token'] = FINMIND_TOKEN
+        try:
+            body = _req.get('https://api.finmindtrade.com/api/v4/data',
+                            params=pp_, timeout=12).json()
+            bd_map = defaultdict(int)
+            for r_ in body.get('data', []):
+                if r_.get('name') == 'Foreign_Investor':
+                    bd_map[r_['date']] += ((r_.get('buy') or 0) - (r_.get('sell') or 0)) // 1000
+            if not bd_map:
+                return False, '無法人資料'
+            lat_ = sorted(bd_map.keys())[-1]
+            net_ = bd_map[lat_]
+            ok_  = net_ > 0
+            return ok_, f"外資{lat_[5:]} {'買+' if ok_ else '賣-'}{abs(net_)}張"
+        except Exception:
+            return False, '法人API錯誤'
+
+    def _get_df_wl(ticker):
+        code_ = ticker.replace('.TW', '').replace('.TWO', '')
+        df_   = fetch(ticker, silent=True)
+        if df_ is None:
+            return None, None
+        last = df_.iloc[-1]
+        if (float(last['Open']) == float(last['High']) ==
+                float(last['Low']) == float(last['Close'])):
+            df_ = df_.iloc[:-1].copy()
+            df_ = calculate_indicators(df_)
+        fq_ = parse_fugle_price(get_fugle_quote(code_))
+
+        def _patch(df__, fq__):
+            df__ = df__.copy()
+            for col, key in [('Open', 'open'), ('High', 'high'), ('Low', 'low')]:
+                if fq__.get(key):
+                    df__.iloc[-1, df__.columns.get_loc(col)] = float(fq__[key])
+            if fq__.get('volume'):
+                df__.iloc[-1, df__.columns.get_loc('Volume')] = float(fq__['volume']) * 1000
+            return calculate_indicators(df__)
+
+        if status == '盤前':
+            if fq_ and fq_.get('close_price'):
+                df_ = _apply_fugle_price(df_, fq_['close_price'], is_intraday=False)
+                df_ = _patch(df_, fq_)
+        elif status == '盤中':
+            if fq_ and fq_.get('price'):
+                df_ = _apply_fugle_price(df_, fq_['price'], is_intraday=True)
+                df_ = df_.copy()
+                for col, key in [('Open', 'open'), ('High', 'high'), ('Low', 'low')]:
+                    if fq_.get(key):
+                        df_.iloc[-1, df_.columns.get_loc(col)] = float(fq_[key])
+                vol_ma5_s = float(df_.iloc[-1]['Vol_MA5']) if df_.iloc[-1]['Vol_MA5'] else 0
+                df_ = calculate_indicators(df_)
+                vol_raw = fq_.get('volume') or 0
+                if vol_raw and vol_ma5_s:
+                    elapsed  = max(1, now.hour * 60 + now.minute - 9 * 60)
+                    progress = min(elapsed / 270, 1.0)
+                    est_vr   = (vol_raw / progress * 1000) / vol_ma5_s
+                    df_.iloc[-1, df_.columns.get_loc('Vol_ratio')]  = est_vr
+                    df_.iloc[-1, df_.columns.get_loc('Vol_MA5')]    = vol_ma5_s
+        else:
+            if fq_ and fq_.get('close_price'):
+                df_ = _apply_fugle_price(df_, fq_['close_price'], is_intraday=False)
+                df_ = _patch(df_, fq_)
+        return df_, fq_
+
+    # ════════════════════════════════════════════════════════
+    _fugle_cache.clear()
+    now    = now_tw()
+    status, _ = market_status()
+
+    if status == '盤中':
+        remaining = max(0, (13 * 60 + 30) - now.hour * 60 - now.minute)
+        time_note  = f"距收盤 {remaining} 分鐘"
+        inst_proxy = "盤中：外盤比>55% 替代法人買超"
+    elif status == '盤後':
+        time_note  = "今日最終收盤"
+        inst_proxy = "盤後：使用最新法人資料（昨日）"
+    else:
+        time_note  = "台股尚未開盤"
+        inst_proxy = "盤前：使用最新法人資料（昨日）"
+
+    print()
+    print("=" * 64)
+    print(f"  👁 V2 觀察名單掃描")
+    print(f"  策略C（低谷反彈）優先  ▶  策略A（趨勢跟蹤）次之")
+    print(f"  {now.strftime('%Y-%m-%d  %H:%M')}  {time_note}")
+    print(f"  ℹ  {inst_proxy}")
+    print("=" * 64)
+
+    holdings  = HOLDINGS
+    watchlist = WATCHLIST
+
+    all_watch = []
+    for group, tickers in watchlist.items():
+        for t in tickers:
+            if (t + ".TW") not in holdings and (t + ".TWO") not in holdings:
+                all_watch.append(t)
+
+    if not all_watch:
+        print("\n  （觀察名單為空，或全部已在持倉中）")
+        return
+
+    c_hits = []
+    a_hits = []
+    pending = []   # 待確認（差1項）
+
+    for code in all_watch:
+        ticker = code + ".TW"
+        df, fq = _get_df_wl(ticker)
+        if df is None:
+            ticker = code + ".TWO"
+            df, fq = _get_df_wl(ticker)
+        if df is None or len(df) < 25:
+            print(f"\n  {code}  ⚠ 資料不足，跳過")
+            continue
+
+        row        = df.iloc[-1]
+        close      = float(row['Close'])
+        ma10       = float(row['MA10'])
+        ma5        = float(row['MA5'])
+        low20      = float(row['Low_20'])
+        rsi        = float(row['RSI'])
+        vol_ma5    = float(row['Vol_MA5']) if row['Vol_MA5'] else 0
+        below_ma10 = close < ma10
+        ask_pct    = fq.get('ask_pct') if fq else None
+
+        # 量能字串（觀察名單同樣顯示）
+        vol_raw = (fq.get('volume') or 0) if fq else 0
+        if vol_raw and vol_ma5 and status == '盤中':
+            elapsed  = max(1, now.hour * 60 + now.minute - 9 * 60)
+            progress = min(elapsed / 270, 1.0)
+            est_vr   = (vol_raw / progress * 1000) / vol_ma5
+            tag = "爆量🔥" if est_vr >= 2 else "放量↑" if est_vr >= 1.5 else "縮量↓" if est_vr < 0.8 else "正常"
+            vol_str = f"預估量比{est_vr:.2f}（{tag}）"
+        elif vol_raw and vol_ma5:
+            vr  = (vol_raw * 1000) / vol_ma5
+            tag = "爆量🔥" if vr >= 2 else "放量↑" if vr >= 1.5 else "縮量↓" if vr < 0.8 else "正常"
+            vol_str = f"量比{vr:.2f}（{tag}）"
+        else:
+            vol_str = ""
+
+        ma10_tag = "⬇MA10下方" if below_ma10 else "MA10上方"
+        ob_str   = f"外盤{ask_pct:.0f}%  " if ask_pct is not None else ""
+        print()
+        print(f"  {'─'*60}")
+        print(f"  {ticker}  現價{close:.1f}  RSI{rsi:.1f}  {ob_str}{ma10_tag}")
+        if vol_str:
+            print(f"  {vol_str}")
+
+        c_triggered = False
+
+        # ── 策略C：低谷反彈 ──────────────────────────────────
+        if below_ma10:
+            print(f"  【策略C 低谷反彈】前提：{close:.1f} < MA10({ma10:.1f}) ✓")
+            try:
+                o_score, o_detail, o_level = detect_oversold(df)
+            except Exception:
+                o_score, o_detail, o_level = 0, [], "?"
+            ok1 = o_score >= C_OVERSOLD_MIN
+            print(f"  ① 超跌評分  {'✓' if ok1 else '✗'}  {o_score}/7（需≥3）→ {o_level}")
+            for d in o_detail:
+                print(f"       {d.strip()}")
+
+            try:
+                e_count, e_list = detect_selling_exhaustion(df)
+            except Exception:
+                e_count, e_list = 0, []
+            ok2 = e_count >= 1
+            print(f"  ② 賣壓衰竭  {'✓' if ok2 else '✗'}  {e_count}項（需≥1）")
+            for s in e_list:
+                print(f"       {s}")
+
+            if status == '盤中' and ask_pct is not None:
+                ok3     = ask_pct > 55
+                c3_note = f"外盤比{ask_pct:.0f}%（盤中替代，需>55%）"
+            else:
+                ok3, c3_note = _inst_buy_latest(code)
+                c3_note = f"{c3_note}（法人）"
+            print(f"  ③ 法人/外盤 {'✓' if ok3 else '✗'}  {c3_note}")
+
+            c_met  = sum([ok1, ok2, ok3])
+            c_stop = low20 * C_STOP_PCT
+            d_stop = (close - c_stop) / close * 100
+            d_tgt  = (ma10 - close) / close * 100
+            rr     = abs(d_tgt / d_stop) if d_stop else 0
+
+            if c_met >= C_MIN_COND:
+                names_ = [n for n, ok in [("超跌", ok1), ("衰竭", ok2), ("法人/外盤", ok3)] if ok]
+                print(f"  → ✅ 策略C進場訊號！{c_met}/3 達成（{'+'.join(names_)}）")
+                print(f"  → 停損：低點{low20:.1f}×0.97={c_stop:.1f}（風險{d_stop:.1f}%）")
+                print(f"  → 目標：收復MA10={ma10:.1f}（+{d_tgt:.1f}%）  風險報酬比 1:{rr:.2f}")
+                if rr < 1.0:
+                    print(f"     ⚠  報酬比偏低，建議等待更強確認訊號再進場")
+                c_hits.append((ticker, close, c_met, d_stop, d_tgt, rr))
+                c_triggered = True
+            elif c_met == C_MIN_COND - 1:
+                missing = [n for n, ok in [("超跌", ok1), ("衰竭", ok2), ("法人/外盤", ok3)] if not ok]
+                print(f"  → 💡 低谷待確認（{c_met}/3，差1項：{'、'.join(missing)}）→ 觀察等待")
+                pending.append((ticker, f"C差1項({', '.join(missing)})"))
+            else:
+                print(f"  → ⏳ 底部條件不足（{c_met}/3）→ 暫不進場")
+
+        # ── 策略A：趨勢跟蹤（C不觸發才看）──────────────────────
+        if not c_triggered:
+            if below_ma10:
+                print(f"  【策略A】（C未觸發，補充趨勢掃描）")
+            else:
+                print(f"  【策略A 趨勢跟蹤】")
+
+            adx     = _calc_adx(df)
+            c20_ago = float(df['Close'].iloc[-21]) if len(df) >= 21 else close
+            roc_20d = (close - c20_ago) / c20_ago * 100
+            adx_ok  = adx >= ADX_TREND
+            roc_ok  = roc_20d >= ROC_20_MIN
+
+            print(f"  ADX={adx:.1f} {'✓' if adx_ok else '✗'}（需≥25）  "
+                  f"20日漲幅={roc_20d:+.1f}% {'✓' if roc_ok else '✗'}（需≥3%）")
+
+            if adx_ok and roc_ok:
+                try:
+                    score, score_msgs = entry_signals(df)
+                except Exception:
+                    score, score_msgs = 0, []
+                for msg in score_msgs:
+                    print(f"  {msg}")
+                if score >= 4:
+                    print(f"  → ✅ 策略A進場訊號！ADX={adx:.0f} 20日+{roc_20d:.1f}% score={score}")
+                    a_hits.append((ticker, close, adx, roc_20d, score))
+                else:
+                    print(f"  → ─ 暫不進場（score={score}/4 未達）")
+            else:
+                parts = []
+                if not adx_ok: parts.append(f"ADX={adx:.0f}<25")
+                if not roc_ok: parts.append(f"20日漲幅{roc_20d:.1f}%<3%")
+                print(f"  → ─ 前提未達：{' / '.join(parts)}")
+
+    # ── 總結 ─────────────────────────────────────────────────
+    print()
+    print("=" * 64)
+    print("  📊 V2 觀察名單掃描結果")
     if c_hits:
-        print(f"  🟢 策略C 進場（{len(c_hits)} 支）：")
-        for t, code, c, met in c_hits:
-            print(f"      {t}  現價{c:.1f}  條件{met}/3 達成")
+        print(f"  🟢 策略C 進場訊號（{len(c_hits)} 支）：")
+        for t, c, met, ds, dt, rr in c_hits:
+            print(f"      {t}  現價{c:.1f}  條件{met}/3  "
+                  f"風險{ds:.1f}% / 目標+{dt:.1f}%  RR={rr:.2f}")
     if a_hits:
-        print(f"  🟢 策略A 進場（{len(a_hits)} 支）：")
-        for t, code, c, adx, roc, sc in a_hits:
+        print(f"  🟢 策略A 進場訊號（{len(a_hits)} 支）：")
+        for t, c, adx, roc, sc in a_hits:
             print(f"      {t}  現價{c:.1f}  ADX={adx:.0f} 20日+{roc:.1f}% score={sc}")
-    if not exits and not trims and not c_hits and not a_hits:
-        print("  今日無任何 V2 訊號 — 持倉繼續持有，觀察名單繼續等待")
+    if pending:
+        print(f"  💡 待確認（{len(pending)} 支）：")
+        for t, reason in pending:
+            print(f"      {t}  {reason}")
+    if not c_hits and not a_hits and not pending:
+        print("  今日觀察名單無進場訊號，繼續等待")
     print("=" * 64)
     print()
 
@@ -3726,6 +4004,8 @@ if __name__ == "__main__":
             watchlist_scan()
         elif arg.lower() == "v2":
             intraday_v2_scan()
+        elif arg.lower() == "v2watch":
+            watchlist_v2_scan()
         else:
             quick_lookup(arg)
     else:
