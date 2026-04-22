@@ -3430,6 +3430,16 @@ def intraday_v2_scan():
         _print_v2_summary(exits, trims)
         return
 
+    # ── 盤中量比標示（預估）──────────────────────────────────
+    def _est(s):
+        """盤中時在量比數值後加（預估）標示，讓人知道是推算值"""
+        import re as _re
+        if status != '盤中' or '預估' in s:
+            return s
+        s = _re.sub(r'(量縮[^量]*量比\s*)([\d\.]+)', r'\1\2（預估）', s)
+        s = _re.sub(r'(量比\s*=\s*)([\d\.]+)',        r'\1\2（預估）', s)
+        return s
+
     # ── 量能說明（盤中推估全日，盤後用實際）────────────────────
     def _vol_note(fq_, vol_ma5_val):
         if not fq_ or not vol_ma5_val:
@@ -3610,7 +3620,7 @@ def intraday_v2_scan():
                 ok1 = o_score >= C_OVERSOLD_MIN
                 print(f"  │ ① 超跌評分 {'✓' if ok1 else '✗'} {o_score}/7（需≥3）")
                 for d in o_detail:
-                    print(f"  │     {d.strip()}")
+                    print(f"  │     {_est(d.strip())}")
 
                 try:
                     e_count, e_list = detect_selling_exhaustion(df)
@@ -3619,7 +3629,7 @@ def intraday_v2_scan():
                 ok2 = e_count >= 1
                 print(f"  │ ② 賣壓衰竭 {'✓' if ok2 else '✗'} {e_count}項（需≥1）")
                 for s in e_list:
-                    print(f"  │     {s}")
+                    print(f"  │     {_est(s)}")
 
                 if status == '盤中' and ask_pct is not None:
                     ok3     = ask_pct > 55
@@ -3731,6 +3741,15 @@ def watchlist_v2_scan():
         dx  = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
         adx = dx.ewm(alpha=a, adjust=False).mean()
         return float(adx.iloc[-1]) if not adx.empty else 0.0
+
+    # ── 盤中量比標示（預估）──────────────────────────────────
+    def _est(s):
+        import re as _re
+        if status != '盤中' or '預估' in s:
+            return s
+        s = _re.sub(r'(量縮[^量]*量比\s*)([\d\.]+)', r'\1\2（預估）', s)
+        s = _re.sub(r'(量比\s*=\s*)([\d\.]+)',        r'\1\2（預估）', s)
+        return s
 
     def _inst_buy_latest(code_):
         start_ = (now_tw() - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -3897,7 +3916,7 @@ def watchlist_v2_scan():
             ok1 = o_score >= C_OVERSOLD_MIN
             print(f"  ① 超跌評分  {'✓' if ok1 else '✗'}  {o_score}/7（需≥3）→ {o_level}")
             for d in o_detail:
-                print(f"       {d.strip()}")
+                print(f"       {_est(d.strip())}")
 
             try:
                 e_count, e_list = detect_selling_exhaustion(df)
@@ -3906,7 +3925,7 @@ def watchlist_v2_scan():
             ok2 = e_count >= 1
             print(f"  ② 賣壓衰竭  {'✓' if ok2 else '✗'}  {e_count}項（需≥1）")
             for s in e_list:
-                print(f"       {s}")
+                print(f"       {_est(s)}")
 
             if status == '盤中' and ask_pct is not None:
                 ok3     = ask_pct > 55
@@ -3960,7 +3979,7 @@ def watchlist_v2_scan():
                 except Exception:
                     score, score_msgs = 0, []
                 for msg in score_msgs:
-                    print(f"  {msg}")
+                    print(f"  {_est(msg)}")
                 if score >= 4:
                     print(f"  → ✅ 策略A進場訊號！ADX={adx:.0f} 20日+{roc_20d:.1f}% score={score}")
                     a_hits.append((ticker, close, adx, roc_20d, score))
