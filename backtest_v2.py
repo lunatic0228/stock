@@ -41,7 +41,7 @@ try:
 except AttributeError:
     pass
 
-from daily_analysis import calculate_indicators, entry_signals, FINMIND_TOKEN
+from daily_analysis import calculate_indicators, entry_signals, peak_signals, FINMIND_TOKEN
 
 TICKERS = {
     "2313.TW": "華通",
@@ -214,6 +214,42 @@ def fetch_data(ticker):
         df.columns = df.columns.get_level_values(0)
     df = df[['Open','High','Low','Close','Volume']].dropna()
     return calculate_indicators(df)
+
+
+# ════════════════════════════════════════════════════════════
+#  高點警示回測（逐日模擬，只看當天為止的資料，不偷看未來）
+#  用法：python backtest_v2.py peak 2344.TW
+# ════════════════════════════════════════════════════════════
+def scan_peak_signals(ticker, name=None, min_score=1):
+    df_full = fetch_data(ticker)
+    if df_full is None or len(df_full) < 25:
+        print(f"  ⚠ {ticker} 資料不足或下載失敗")
+        return []
+
+    label = f"{ticker} {name}" if name else ticker
+    print(f"\n  {'='*60}")
+    print(f"  高點警示回測：{label}（{df_full.index[0].date()} ~ {df_full.index[-1].date()}）")
+    print(f"  {'='*60}")
+
+    hits = []
+    for i in range(20, len(df_full)):
+        sub   = df_full.iloc[:i + 1]
+        score, msgs = peak_signals(sub)
+        if score >= min_score:
+            date  = sub.index[-1].date()
+            close = float(sub.iloc[-1]['Close'])
+            hits.append((date, close, score, msgs))
+
+    if not hits:
+        print(f"  （這段期間都沒有觸發 ≥{min_score}/4 的高點警示）")
+        return hits
+
+    for date, close, score, msgs in hits:
+        print(f"\n  {date}  收盤 {close:.1f}  高點警示 {score}/4")
+        for m in msgs:
+            print(m)
+
+    return hits
 
 
 # ════════════════════════════════════════════════════════════
@@ -478,6 +514,10 @@ def print_result(trades, ticker, name, df_full):
 
 # ════════════════════════════════════════════════════════════
 if __name__ == '__main__':
+    if len(sys.argv) > 2 and sys.argv[1].lower() == 'peak':
+        scan_peak_signals(sys.argv[2], name=TICKERS.get(sys.argv[2]))
+        sys.exit(0)
+
     print("\n回測開始（低谷C + 起勢A 雙策略），下載資料中…\n")
     summaries = []
 
