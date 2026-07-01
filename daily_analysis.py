@@ -1282,6 +1282,57 @@ def exit_signals(df, buy_price):
     return msgs
 
 
+def peak_signals(df, vol_ratio=None):
+    """高點/出貨警示評分（不需持倉買價，觀察名單也能用）
+
+    盤中/盤末查詢時建議傳入 vol_ratio=預估全日量比，取代當日累計量比
+    （否則盤中量比會被低估，導致「量價背離」「爆量滯漲」誤判）
+
+    綜合四項訊號（0~4分，分數越高越像高點）：
+      1) 乖離率 + RSI 過熱：偏離 MA5 過大且 RSI 超買
+      2) 量價背離：股價創近20日新高，但量比低於前次高點的量比（追價量能不足）
+      3) RSI背離：股價創近20日新高，但 RSI 低於前次高點的 RSI（動能減弱）
+      4) 爆量滯漲：量比 ≥2 但當日漲跌幅 <1.5%（大量卻不漲，疑似出貨）
+
+    回傳 (score 0~4, msgs)
+    """
+    r    = df.iloc[-1]
+    prev = df.iloc[-2]
+    close = r['Close']
+    vr    = vol_ratio if vol_ratio is not None else r['Vol_ratio']
+
+    score, msgs = 0, []
+
+    deviation = (close - r['MA5']) / r['MA5'] * 100
+    rsi       = r['RSI']
+    if deviation > 8 and rsi > 68:
+        score += 1
+        msgs.append(f"  🔺 乖離率 {deviation:+.1f}% 且 RSI {rsi:.1f}  → 過熱，短線隨時可能反轉")
+    elif deviation > 5 and rsi > 62:
+        score += 1
+        msgs.append(f"  🔺 乖離率 {deviation:+.1f}% 且 RSI {rsi:.1f}  → 偏熱，留意動能減弱")
+
+    # 近20日新高比較基準（不含今日）
+    window = df.iloc[-20:-1]
+    if len(window) >= 5 and close >= window['Close'].max():
+        prior_idx = window['Close'].idxmax()
+        prior_vr  = df.loc[prior_idx, 'Vol_ratio']
+        prior_rsi = df.loc[prior_idx, 'RSI']
+        if pd.notna(prior_vr) and prior_vr > 0 and vr < prior_vr * 0.8:
+            score += 1
+            msgs.append(f"  🔺 量價背離：創20日新高，但量比 {vr:.2f} 遠低於前次高點 {prior_vr:.2f}  → 追價量能不足")
+        if pd.notna(prior_rsi) and rsi < prior_rsi - 3:
+            score += 1
+            msgs.append(f"  🔺 RSI背離：創新高但 RSI {rsi:.1f} 低於前次高點 {prior_rsi:.1f}  → 上漲動能減弱")
+
+    daily_change = (close - prev['Close']) / prev['Close'] * 100
+    if vr >= 2 and abs(daily_change) < 1.5:
+        score += 1
+        msgs.append(f"  🔺 爆量滯漲：量比 {vr:.2f} 但漲跌幅僅 {daily_change:+.1f}%  → 大量卻不漲，留意出貨")
+
+    return score, msgs
+
+
 def avg_down_signals(df):
     """
     反彈確認條件（第二階段，在超跌+衰竭出現後用來確認正式反彈）
@@ -1942,6 +1993,20 @@ def quick_lookup(raw_code):
     squeeze, squeeze_msg = detect_bb_squeeze(df)
     if squeeze and squeeze_msg:
         print(squeeze_msg)
+
+    # ── 高點警示（不論是否持倉都顯示；盤中用預估全日量比）──
+    peak_score, peak_msgs = peak_signals(df, vol_ratio=vol_est_ratio)
+    print()
+    if peak_score >= 2:
+        print(f"  ── ⚠️ 高點警示 {peak_score}/4 ──")
+        for m in peak_msgs:
+            print(m)
+    elif peak_score == 1:
+        print(f"  ── 高點警示 {peak_score}/4（單一訊號，先觀察）──")
+        for m in peak_msgs:
+            print(m)
+    else:
+        print(f"  ✅ 高點警示 0/4，暫無明顯出貨/背離訊號")
 
     # ── 若在持倉中：顯示停損/停利/加碼訊號 ──
     holding = HOLDINGS.get(ticker)
