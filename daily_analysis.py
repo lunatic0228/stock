@@ -3598,6 +3598,13 @@ def intraday_v2_scan():
         print(f"  乖離{deviation:+.1f}%  RSI{rsi:.1f}  {ob_str}")
         print(f"  {vol_str}")
 
+        # ── 高點警示（量價背離/RSI背離/過熱/爆量滯漲，df 已含估算量比）──
+        peak_score, peak_msgs = peak_signals(df)
+        if peak_score >= 1:
+            print(f"  ⚠️ 高點警示 {peak_score}/4")
+            for m in peak_msgs:
+                print(m)
+
         # ── 出場/減碼判斷（C優先，虧損且在MA10下方用C規則）────
         use_c = in_loss and below_ma10
 
@@ -3968,6 +3975,13 @@ def watchlist_v2_scan():
         print(f"  {ticker}  現價{close:.1f}  RSI{rsi:.1f}  {ob_str}{ma10_tag}")
         if vol_str:
             print(f"  {vol_str}")
+
+        # ── 高點警示（量價背離/RSI背離/過熱/爆量滯漲，df 已含估算量比）──
+        peak_score, peak_msgs = peak_signals(df)
+        if peak_score >= 1:
+            print(f"  ⚠️ 高點警示 {peak_score}/4")
+            for m in peak_msgs:
+                print(m)
 
         c_triggered = False
 
