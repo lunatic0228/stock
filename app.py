@@ -120,18 +120,38 @@ with tab_analysis:
         mode = st.radio(
             "選擇功能",
             ["📊 盤後分析", "🔎 盤中掃描", "👁 觀察名單", "⚡ 快速查詢",
-             "🤖 機械訊號", "📡 V2盤中分析", "🔭 V2觀察名單", "🕵 大股東增持掃描"],
+             "🤖 機械訊號", "📡 V2盤中分析", "🔭 V2觀察名單",
+             "🕯 K線趨勢診斷", "🕵 大股東增持掃描"],
             label_visibility="collapsed",
             captions=["", "", "", "", "v2規則，非黑即白",
-                      "持倉監控＋虧損複查", "V2策略掃進場機會", "🔬 進階工具"],
+                      "持倉監控＋虧損複查", "V2策略掃進場機會",
+                      "單根K線＋型態＋量價＋階段＋歷史類比", "🔬 進階工具"],
         )
 
         # 依選項顯示對應參數
         stock_code = None
         insider_days, insider_min_lots, insider_min_vol = 60, 500, 500
+        kline_code, kline_all, kline_days, kline_peer = None, False, 750, True
 
         if "快速查詢" in mode:
             stock_code = st.text_input("股票代號", placeholder="例：2313　或　NVDA").strip()
+
+        if "K線" in mode:
+            kline_code = st.text_input(
+                "股票代號", placeholder="例：2313", key="kline_code",
+            ).strip()
+            kline_all = st.checkbox(
+                "分析全部持倉", value=False,
+                help="逐檔輸出，標的多時較慢（法人 API 可能限流）",
+            )
+            kline_days = st.select_slider(
+                "歷史長度（交易日）", options=[250, 500, 750, 1000], value=750,
+                help="波段結構與趨勢階段需 ≥500 根才穩定，歷史類比更需要長度",
+            )
+            kline_peer = st.checkbox(
+                "類比樣本不足時擴大到同儕池", value=True,
+                help="本股樣本不足 30 筆時，納入其他半導體/電子股的相同情境",
+            )
 
         if "大股東" in mode:
             insider_days = st.select_slider(
@@ -190,7 +210,7 @@ with tab_analysis:
 
     elif not run_btn:
         st.info("👈 左側選擇功能後點擊「執行」")
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
             st.markdown("### 📊 盤後分析")
             st.write("收盤後執行，持倉警示、攤平／加碼訊號。")
@@ -206,6 +226,10 @@ with tab_analysis:
         with c5:
             st.markdown("### 🤖 機械訊號")
             st.write("v2規則嚴格判斷，進場/出場/減碼，非黑即白。")
+        with c6:
+            st.markdown("### 🕯 K線趨勢診斷")
+            st.write("今日K線含意、近5日型態、量價配合、趨勢階段與歷史類比，"
+                     "並與 A/C 策略並列對照。")
 
     else:  # run_btn，一般功能
         _inject_holdings()
@@ -232,6 +256,17 @@ with tab_analysis:
                             _da.quick_lookup(stock_code)
                         else:
                             print("  ⚠  請先輸入股票代號")
+                    elif "K線" in mode:
+                        import kline_analysis as _ka   # 延後 import，其他模式不付成本
+                        if kline_all:
+                            _ka.kline_all_holdings(
+                                days=int(kline_days), use_peer_pool=kline_peer)
+                        elif kline_code:
+                            _ka.kline_report(
+                                kline_code, days=int(kline_days),
+                                use_peer_pool=kline_peer)
+                        else:
+                            print("  ⚠  請輸入股票代號，或勾選「分析全部持倉」")
             except Exception as e:
                 err = str(e)
 
